@@ -1,4 +1,6 @@
 import com.android.build.gradle.LibraryExtension
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 group = "com.eventer.flutter_barcode_scanner_sdk"
 version = "1.0-SNAPSHOT"
@@ -11,6 +13,7 @@ buildscript {
 
     dependencies {
         classpath("com.android.tools.build:gradle:9.0.1")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.20")
     }
 }
 
@@ -60,6 +63,12 @@ extensions.configure<LibraryExtension>("android") {
                 }
             }
         }
+    }
+}
+
+tasks.withType<KotlinCompile>().configureEach {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
