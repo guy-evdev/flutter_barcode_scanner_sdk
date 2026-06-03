@@ -25,6 +25,9 @@ allprojects {
 }
 
 apply(plugin = "com.android.library")
+if (extensions.findByName("kotlin") == null) {
+    apply(plugin = "org.jetbrains.kotlin.android")
+}
 
 extensions.configure<LibraryExtension>("android") {
     namespace = "com.eventer.flutter_barcode_scanner_sdk"
