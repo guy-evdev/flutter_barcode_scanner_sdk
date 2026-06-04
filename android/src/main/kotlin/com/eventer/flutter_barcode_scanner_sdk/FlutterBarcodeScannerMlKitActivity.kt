@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.os.Bundle
 import android.text.TextUtils
+import android.util.Size
 import android.view.Gravity
 import android.view.Surface
 import android.view.View
@@ -21,6 +22,9 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.camera.view.transform.CoordinateTransform
@@ -127,6 +131,7 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
                 }
 
                 analysis = ImageAnalysis.Builder()
+                    .setResolutionSelector(barcodeAnalysisResolutionSelector())
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                     .also { analysisUseCase ->
@@ -226,7 +231,19 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
         val boundingBox = barcode.boundingBox ?: return false
         val mappedRect = RectF(boundingBox)
         coordinateTransform.mapRect(mappedRect)
-        return overlayRect.contains(mappedRect)
+        return overlayRect.contains(mappedRect.centerX(), mappedRect.centerY())
+    }
+
+    private fun barcodeAnalysisResolutionSelector(): ResolutionSelector {
+        return ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    Size(1280, 720),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                ),
+            )
+            .build()
     }
 
     private fun buildContentView(): View {

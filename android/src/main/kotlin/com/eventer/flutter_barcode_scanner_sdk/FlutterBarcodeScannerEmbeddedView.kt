@@ -10,6 +10,7 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
+import android.util.Size
 import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
@@ -20,6 +21,9 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCase
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.camera.view.transform.CoordinateTransform
@@ -243,6 +247,7 @@ class FlutterBarcodeScannerEmbeddedView(
             useCase.setSurfaceProvider(previewView.surfaceProvider)
         }
         val analysisUseCase = ImageAnalysis.Builder()
+            .setResolutionSelector(barcodeAnalysisResolutionSelector())
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .also { useCase ->
@@ -443,7 +448,19 @@ class FlutterBarcodeScannerEmbeddedView(
         val boundingBox = barcode.boundingBox ?: return false
         val mappedRect = RectF(boundingBox)
         coordinateTransform.mapRect(mappedRect)
-        return overlayRect.contains(mappedRect)
+        return overlayRect.contains(mappedRect.centerX(), mappedRect.centerY())
+    }
+
+    private fun barcodeAnalysisResolutionSelector(): ResolutionSelector {
+        return ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    Size(1280, 720),
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                ),
+            )
+            .build()
     }
 
     private fun ensureScanner(): BarcodeScanner {

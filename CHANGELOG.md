@@ -1,3 +1,8 @@
+## 0.1.1
+
+- Improved dense 1D barcode scanning in full-screen and embedded modes.
+- Fixed iOS embedded scan-window filtering for long linear barcodes.
+
 ## 0.1.0
 
 Initial public release.

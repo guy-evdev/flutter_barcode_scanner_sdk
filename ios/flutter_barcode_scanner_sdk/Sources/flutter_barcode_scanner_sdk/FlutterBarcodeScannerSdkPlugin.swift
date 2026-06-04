@@ -663,7 +663,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                     as? AVMetadataMachineReadableCodeObject,
                 let stringValue = transformed.stringValue,
                 !stringValue.isEmpty,
-                !config.scanWindowEnabled || isCodeFullyInsideScanWindow(transformed)
+                !config.scanWindowEnabled || isCodeCenteredInScanWindow(transformed)
             else {
                 continue
             }
@@ -681,25 +681,11 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
         }
     }
 
-    private func isCodeFullyInsideScanWindow(_ code: AVMetadataMachineReadableCodeObject) -> Bool {
+    private func isCodeCenteredInScanWindow(_ code: AVMetadataMachineReadableCodeObject) -> Bool {
         if !config.scanWindowEnabled || currentScanWindow.isEmpty {
             return true
         }
-        let cgPoints = code.corners.compactMap { corner -> CGPoint? in
-            if let pointValue = corner as? NSValue {
-                return pointValue.cgPointValue
-            }
-            if let dictionary = corner as? NSDictionary {
-                return CGPoint(dictionaryRepresentation: dictionary)
-            }
-            return nil
-        }
-
-        if !cgPoints.isEmpty {
-            return cgPoints.allSatisfy { currentScanWindow.contains($0) }
-        }
-
-        return currentScanWindow.contains(code.bounds)
+        return currentScanWindow.contains(CGPoint(x: code.bounds.midX, y: code.bounds.midY))
     }
 
     private func finishWithError(_ message: String) {
@@ -1216,12 +1202,11 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     }
 
     private func applyRectOfInterest() {
-        guard session.outputs.contains(metadataOutput), bounds.width > 0, bounds.height > 0 else { return }
-        if config.scanWindowEnabled, !currentScanWindow.isEmpty {
-            metadataOutput.rectOfInterest = previewLayer.metadataOutputRectConverted(fromLayerRect: currentScanWindow)
-        } else {
-            metadataOutput.rectOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
-        }
+        guard session.outputs.contains(metadataOutput) else { return }
+        // AVFoundation can miss long 1D codes when metadata detection is
+        // pre-clipped to the visual scan box. Scan the full frame and apply the
+        // transformed center-point ROI check in metadataOutput(_:didOutput:from:).
+        metadataOutput.rectOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
     }
 
     func metadataOutput(
@@ -1238,7 +1223,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
                     as? AVMetadataMachineReadableCodeObject,
                 let stringValue = transformed.stringValue,
                 !stringValue.isEmpty,
-                !config.scanWindowEnabled || isCodeFullyInsideScanWindow(transformed)
+                !config.scanWindowEnabled || isCodeCenteredInScanWindow(transformed)
             else {
                 continue
             }
@@ -1255,25 +1240,11 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         }
     }
 
-    private func isCodeFullyInsideScanWindow(_ code: AVMetadataMachineReadableCodeObject) -> Bool {
+    private func isCodeCenteredInScanWindow(_ code: AVMetadataMachineReadableCodeObject) -> Bool {
         if !config.scanWindowEnabled || currentScanWindow.isEmpty {
             return true
         }
-        let cgPoints = code.corners.compactMap { corner -> CGPoint? in
-            if let pointValue = corner as? NSValue {
-                return pointValue.cgPointValue
-            }
-            if let dictionary = corner as? NSDictionary {
-                return CGPoint(dictionaryRepresentation: dictionary)
-            }
-            return nil
-        }
-
-        if !cgPoints.isEmpty {
-            return cgPoints.allSatisfy { currentScanWindow.contains($0) }
-        }
-
-        return currentScanWindow.contains(code.bounds)
+        return currentScanWindow.contains(CGPoint(x: code.bounds.midX, y: code.bounds.midY))
     }
 
     private func showFrozenPreview() {
