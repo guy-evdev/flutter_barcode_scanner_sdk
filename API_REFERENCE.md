@@ -57,6 +57,11 @@ This reference summarizes the public Dart API for `flutter_barcode_scanner_sdk`.
 | `heightFactor` | `double` | `0.58` | Scan-window height as a fraction of preview height. |
 | `cornerRadius` | `double` | `18` | Scan-window overlay corner radius. |
 
+Width and height factors are normalized to the cross-platform supported ranges
+(`0.2...0.95` and `0.2...0.9` respectively). Non-finite values use defaults,
+and negative corner radii become zero. The effective values are available from
+`effectiveWidthFactor`, `effectiveHeightFactor`, and `effectiveCornerRadius`.
+
 ### `FlutterBarcodeScannerUiConfig`
 
 | Field | Type | Default | Description |
@@ -136,6 +141,7 @@ This reference summarizes the public Dart API for `flutter_barcode_scanner_sdk`.
 | `type` | `FlutterBarcodeScannerResultType` | Result kind: barcode, cancelled, or error. |
 | `rawValue` | `String` | Decoded barcode value, empty for cancelled/error results. |
 | `format` | `FlutterBarcodeScannerFormat` | Detected barcode format. |
+| `nativeFormat` | `String?` | Original native format identifier, including identifiers not recognized by this package version. |
 | `errorCode` | `String?` | Optional native error code. |
 | `errorMessage` | `String?` | Optional native error message. |
 | `isCancelled` | `bool` | Whether this is a cancellation result. |
@@ -160,6 +166,7 @@ This reference summarizes the public Dart API for `flutter_barcode_scanner_sdk`.
 
 | Enum | Native value | Description |
 | --- | --- | --- |
+| `unknown` | `UNKNOWN` | Unknown or future native barcode format. Not included in format presets. |
 | `qrCode` | `QR_CODE` | QR Code. |
 | `code128` | `CODE_128` | Code 128. |
 | `code39` | `CODE_39` | Code 39. |

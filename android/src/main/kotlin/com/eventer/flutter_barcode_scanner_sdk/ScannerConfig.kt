@@ -1,6 +1,5 @@
 package com.eventer.flutter_barcode_scanner_sdk
 
-import android.graphics.Color
 import java.io.Serializable
 
 data class ScannerStrings(
@@ -63,20 +62,35 @@ data class ScannerConfig(
                 showCameraSwitchButton =
                     uiMap?.get("showCameraSwitchButton") as? Boolean ?: true,
                 initialCameraLens =
-                    uiMap?.get("initialCameraLens") as? String ?: "back",
+                    (uiMap?.get("initialCameraLens") as? String)
+                        ?.takeIf { it == "front" || it == "back" }
+                        ?: "back",
                 initialTorchEnabled =
                     uiMap?.get("initialTorchEnabled") as? Boolean ?: false,
                 textDirection = map?.get("textDirection") as? String,
                 scanWindowEnabled =
                     windowMap?.get("enabled") as? Boolean ?: true,
                 scanWindowWidthFactor =
-                    ((windowMap?.get("widthFactor") as? Number)?.toFloat() ?: 0.58f)
-                        .coerceIn(0.2f, 0.95f),
+                    normalizedFloat(
+                        windowMap?.get("widthFactor"),
+                        fallback = 0.58f,
+                        minimum = 0.2f,
+                        maximum = 0.95f,
+                    ),
                 scanWindowHeightFactor =
-                    ((windowMap?.get("heightFactor") as? Number)?.toFloat() ?: 0.58f)
-                        .coerceIn(0.2f, 0.9f),
+                    normalizedFloat(
+                        windowMap?.get("heightFactor"),
+                        fallback = 0.58f,
+                        minimum = 0.2f,
+                        maximum = 0.9f,
+                    ),
                 scanWindowCornerRadius =
-                    (windowMap?.get("cornerRadius") as? Number)?.toFloat() ?: 18f,
+                    normalizedFloat(
+                        windowMap?.get("cornerRadius"),
+                        fallback = 18f,
+                        minimum = 0f,
+                        maximum = Float.MAX_VALUE,
+                    ),
                 statusBarTransparent =
                     statusBarMap?.get("isTransparent") as? Boolean ?: false,
                 statusBarBackgroundColor =
@@ -91,7 +105,7 @@ data class ScannerConfig(
                     (map?.get("appBarForegroundColor") as? Number)?.toInt(),
                 overlayColor =
                     ((map?.get("overlayColor") as? Number)?.toInt()
-                        ?: Color.parseColor("#99000000")),
+                        ?: 0x99000000.toInt()),
             )
         }
 
@@ -126,6 +140,16 @@ data class ScannerConfig(
                 "AZTEC" -> "AZTEC"
                 else -> null
             }
+        }
+
+        private fun normalizedFloat(
+            value: Any?,
+            fallback: Float,
+            minimum: Float,
+            maximum: Float,
+        ): Float {
+            val number = (value as? Number)?.toFloat()?.takeIf { it.isFinite() } ?: fallback
+            return number.coerceIn(minimum, maximum)
         }
     }
 

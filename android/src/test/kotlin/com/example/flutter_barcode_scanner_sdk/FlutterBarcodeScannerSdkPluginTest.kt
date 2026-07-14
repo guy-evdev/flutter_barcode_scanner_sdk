@@ -78,4 +78,24 @@ internal class FlutterBarcodeScannerSdkPluginTest {
         assertEquals(0.2f, config.scanWindowHeightFactor)
         assertEquals(24f, config.scanWindowCornerRadius)
     }
+
+    @Test
+    fun scannerConfigRejectsNonFiniteWindowValuesAndInvalidLens() {
+        val config = ScannerConfig.fromMap(
+            mapOf(
+                "scanWindow" to mapOf(
+                    "widthFactor" to Double.NaN,
+                    "heightFactor" to Double.POSITIVE_INFINITY,
+                    "cornerRadius" to -4,
+                ),
+                "uiConfig" to mapOf("initialCameraLens" to "external"),
+                "overlayColor" to 0x99000000.toInt(),
+            ),
+        )
+
+        assertEquals(0.58f, config.scanWindowWidthFactor)
+        assertEquals(0.58f, config.scanWindowHeightFactor)
+        assertEquals(0f, config.scanWindowCornerRadius)
+        assertEquals("back", config.initialCameraLens)
+    }
 }

@@ -1,3 +1,14 @@
+## 0.2.0
+
+- Upgraded CameraX to 1.6.1 and hardened permission, lifecycle, torch, and
+  camera-switch handling on Android and iOS.
+- Fixed embedded controller replacement and preserved runtime camera state across
+  configuration updates.
+- Standardized scan-window validation and improved UPC-A and unknown-format
+  reporting. Exhaustive format switches must now handle `unknown`.
+- Expanded native/Flutter tests and CI, and corrected package compatibility and
+  CocoaPods metadata.
+
 ## 0.1.2
 
 - Fixed an iOS `AVCaptureSession` crash caused by metadata output configuration

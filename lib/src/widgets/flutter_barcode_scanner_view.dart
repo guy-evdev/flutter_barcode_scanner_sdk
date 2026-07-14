@@ -106,6 +106,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   bool _restartCameraOnResume = false;
   bool _restorePausedDetectionOnResume = false;
   bool _torchEnabled = false;
+  int _platformViewGeneration = 0;
 
   @override
   void initState() {
@@ -124,6 +125,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
       _releaseController();
+      _platformViewGeneration += 1;
       _setController(
         widget.controller,
         ownsController: widget.controller == null,
@@ -142,15 +144,14 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
             oldWidget.autoPauseOnScan != widget.autoPauseOnScan) &&
         _controller.isAttached) {
       unawaited(
-        _controller.updateConfig(
-          widget.config,
-          autoPauseOnScan: widget.autoPauseOnScan,
-          widgetConfig: widget.widgetConfig,
+        _runControllerAction(
+          () => _controller.updateConfig(
+            widget.config,
+            autoPauseOnScan: widget.autoPauseOnScan,
+            widgetConfig: widget.widgetConfig,
+          ),
         ),
       );
-    }
-    if (configChanged) {
-      _torchEnabled = widget.config.uiConfig.initialTorchEnabled;
     }
     if (oldWidget.widgetConfig.autoRequestCameraPermission !=
         widget.widgetConfig.autoRequestCameraPermission) {
@@ -169,23 +170,26 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
         state == AppLifecycleState.detached) {
-      _restartCameraOnResume =
+      final shouldRestart =
           _state == FlutterBarcodeScannerViewState.running ||
           _state == FlutterBarcodeScannerViewState.detectionPaused;
-      _restorePausedDetectionOnResume =
-          _state == FlutterBarcodeScannerViewState.detectionPaused;
-      if (_restartCameraOnResume) {
-        unawaited(_controller.stopCamera());
+      if (shouldRestart && !_restartCameraOnResume) {
+        _restartCameraOnResume = true;
+        _restorePausedDetectionOnResume =
+            _state == FlutterBarcodeScannerViewState.detectionPaused;
+        unawaited(_runControllerAction(_controller.stopCamera));
       }
       return;
     }
     if (state == AppLifecycleState.resumed && _restartCameraOnResume) {
       _restartCameraOnResume = false;
+      final restorePausedDetection = _restorePausedDetectionOnResume;
+      _restorePausedDetectionOnResume = false;
       unawaited(
-        _controller.startCamera().then((_) {
-          if (_restorePausedDetectionOnResume) {
-            _restorePausedDetectionOnResume = false;
-            return _controller.pauseDetection();
+        _runControllerAction(() async {
+          await _controller.startCamera();
+          if (restorePausedDetection) {
+            await _controller.pauseDetection();
           }
         }),
       );
@@ -216,7 +220,8 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
                   painter: _ScannerOverlayPainter(
                     scanWindow: scanWindow,
                     overlayColor: widget.config.overlayColor,
-                    cornerRadius: widget.config.scanWindow.cornerRadius,
+                    cornerRadius:
+                        widget.config.scanWindow.effectiveCornerRadius,
                     borderColor: _isDetectionPaused
                         ? widget.widgetConfig.pausedScanWindowBorderColor
                         : widget.widgetConfig.scanWindowBorderColor,
@@ -277,6 +282,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
         return AndroidView(
+          key: ValueKey<int>(_platformViewGeneration),
           viewType: 'flutter_barcode_scanner_sdk/scanner_view',
           onPlatformViewCreated: _onPlatformViewCreated,
           creationParams: creationParams,
@@ -285,6 +291,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
         );
       case TargetPlatform.iOS:
         return UiKitView(
+          key: ValueKey<int>(_platformViewGeneration),
           viewType: 'flutter_barcode_scanner_sdk/scanner_view',
           onPlatformViewCreated: _onPlatformViewCreated,
           creationParams: creationParams,
@@ -326,11 +333,15 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
                     : widget.config.strings.flashOn,
                 icon: _torchEnabled ? Icons.flash_off : Icons.flash_on,
                 onPressed: () async {
-                  final enabled = await _controller.toggleFlash();
-                  if (mounted && enabled != null) {
-                    setState(() {
-                      _torchEnabled = enabled;
-                    });
+                  try {
+                    final enabled = await _controller.toggleFlash();
+                    if (mounted && enabled != null) {
+                      setState(() {
+                        _torchEnabled = enabled;
+                      });
+                    }
+                  } catch (error, stackTrace) {
+                    _handleControllerError(error, stackTrace);
                   }
                 },
               ),
@@ -345,9 +356,11 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
                     : Icons.pause_rounded,
                 onPressed: () {
                   if (_isDetectionPaused) {
-                    unawaited(_controller.resumeDetection());
+                    unawaited(
+                      _runControllerAction(_controller.resumeDetection),
+                    );
                   } else {
-                    unawaited(_controller.pauseDetection());
+                    unawaited(_runControllerAction(_controller.pauseDetection));
                   }
                 },
               ),
@@ -359,7 +372,9 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
                 icon: Platform.isIOS
                     ? Icons.cameraswitch_outlined
                     : Icons.flip_camera_android_outlined,
-                onPressed: () => _controller.switchCamera(),
+                onPressed: () {
+                  unawaited(_switchCamera());
+                },
               ),
           ],
         ),
@@ -415,11 +430,11 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
         size.height <= 0) {
       return null;
     }
-    final requestedWidth = size.width * widget.config.scanWindow.widthFactor;
-    final requestedHeight = size.height * widget.config.scanWindow.heightFactor;
+    final scanWindow = widget.config.scanWindow;
+    final requestedWidth = size.width * scanWindow.effectiveWidthFactor;
+    final requestedHeight = size.height * scanWindow.effectiveHeightFactor;
     final useSquare =
-        (widget.config.scanWindow.widthFactor -
-                widget.config.scanWindow.heightFactor)
+        (scanWindow.effectiveWidthFactor - scanWindow.effectiveHeightFactor)
             .abs() <
         0.001;
     final width = useSquare
@@ -482,6 +497,44 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
         _controller.detach(viewId);
       }
     }
+  }
+
+  Future<void> _runControllerAction(Future<void> Function() action) async {
+    try {
+      await action();
+    } catch (error, stackTrace) {
+      _handleControllerError(error, stackTrace);
+    }
+  }
+
+  Future<void> _switchCamera() async {
+    try {
+      await _controller.switchCamera();
+      if (mounted) {
+        setState(() {
+          _torchEnabled = false;
+        });
+      }
+    } catch (error, stackTrace) {
+      _handleControllerError(error, stackTrace);
+    }
+  }
+
+  void _handleControllerError(Object error, StackTrace stackTrace) {
+    if (!mounted) {
+      return;
+    }
+    final platformError = error is PlatformException
+        ? error
+        : PlatformException(
+            code: 'CONTROLLER_UNAVAILABLE',
+            message: error.toString(),
+            details: stackTrace.toString(),
+          );
+    setState(() {
+      _state = FlutterBarcodeScannerViewState.error;
+      _lastError = platformError;
+    });
   }
 
   Future<void> _ensureCameraPermission() async {

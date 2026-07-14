@@ -49,3 +49,6 @@ pubspec.lock
 *.log
 *.swp
 NEW_FEATURES_ROADMAP.md
+
+# FVM Version Cache
+.fvm/

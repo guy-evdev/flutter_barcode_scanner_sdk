@@ -22,6 +22,7 @@ Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iO
 - [Format Presets](#format-presets)
 - [Example App](#example-app)
 - [API Reference](#api-reference)
+- [Compatibility](#compatibility)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
@@ -38,7 +39,7 @@ Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iO
 
 ```yaml
 dependencies:
-  flutter_barcode_scanner_sdk: ^0.1.2
+  flutter_barcode_scanner_sdk: ^0.2.0
 ```
 
 Then run:
@@ -156,6 +157,11 @@ flutter run
 See [API_REFERENCE.md](API_REFERENCE.md) for tables covering all public configuration fields, defaults, result fields, controller methods, and supported barcode formats.
 
 Generated Dart API docs are available on pub.dev after publication.
+
+## Compatibility
+
+See [COMPATIBILITY.md](COMPATIBILITY.md) for supported Flutter, Android, iOS,
+SwiftPM/CocoaPods, dependency-update, and API-compatibility policies.
 
 ## Troubleshooting
 

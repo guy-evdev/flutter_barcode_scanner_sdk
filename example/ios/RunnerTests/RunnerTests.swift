@@ -1,27 +1,32 @@
+@testable import flutter_barcode_scanner_sdk
+import AVFoundation
 import Flutter
-import UIKit
 import XCTest
 
-
-@testable import flutter_barcode_scanner_sdk
-
-// This demonstrates a simple unit test of the Swift portion of this plugin's implementation.
-//
-// See https://developer.apple.com/documentation/xctest for more information about using XCTest.
-
 class RunnerTests: XCTestCase {
+    func testScannerConfigNormalizesWindowValues() {
+        let config = ScannerConfig(
+            arguments: [
+                "scanWindow": [
+                    "widthFactor": Double.infinity,
+                    "heightFactor": 0.01,
+                    "cornerRadius": -4,
+                ],
+                "uiConfig": ["initialCameraLens": "front"],
+            ]
+        )
 
-  func testGetPlatformVersion() {
-    let plugin = FlutterBarcodeScannerSdkPlugin()
-
-    let call = FlutterMethodCall(methodName: "getPlatformVersion", arguments: [])
-
-    let resultExpectation = expectation(description: "result block must be called.")
-    plugin.handle(call) { result in
-      XCTAssertEqual(result as! String, "iOS " + UIDevice.current.systemVersion)
-      resultExpectation.fulfill()
+        XCTAssertEqual(config.scanWindowWidthFactor, 0.58)
+        XCTAssertEqual(config.scanWindowHeightFactor, 0.2)
+        XCTAssertEqual(config.scanWindowCornerRadius, 0)
+        XCTAssertEqual(config.initialCameraPosition, AVCaptureDevice.Position.front)
     }
-    waitForExpectations(timeout: 1)
-  }
 
+    func testScannerConfigMapsRequestedFormats() {
+        let config = ScannerConfig(
+            arguments: ["allowedFormats": ["QR_CODE", "CODE_128"]]
+        )
+
+        XCTAssertEqual(config.allowedTypes, [.qr, .code128])
+    }
 }

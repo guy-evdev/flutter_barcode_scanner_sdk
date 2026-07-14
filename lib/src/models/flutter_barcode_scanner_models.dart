@@ -36,7 +36,12 @@ enum FlutterBarcodeScannerFormat {
   dataMatrix('DATA_MATRIX'),
 
   /// Aztec two-dimensional barcode.
-  aztec('AZTEC');
+  aztec('AZTEC'),
+
+  /// An unrecognized format reported by a native scanner implementation.
+  ///
+  /// Kept last so adding it does not change the indices of existing enum values.
+  unknown('UNKNOWN');
 
   /// Creates a scanner format with the native platform representation.
   const FlutterBarcodeScannerFormat(this.nativeValue);
@@ -46,13 +51,13 @@ enum FlutterBarcodeScannerFormat {
 
   /// Parses a native platform format value.
   ///
-  /// Unknown values fall back to [FlutterBarcodeScannerFormat.qrCode] so that
-  /// malformed native payloads still produce a usable result object.
+  /// Unknown values map to [FlutterBarcodeScannerFormat.unknown] so callers do
+  /// not accidentally treat an unsupported symbology as a QR code.
   static FlutterBarcodeScannerFormat fromNativeValue(String? value) {
     final normalized = value?.toUpperCase().replaceAll('-', '_');
     return FlutterBarcodeScannerFormat.values.firstWhere(
       (format) => format.nativeValue == normalized,
-      orElse: () => FlutterBarcodeScannerFormat.qrCode,
+      orElse: () => FlutterBarcodeScannerFormat.unknown,
     );
   }
 }
@@ -306,6 +311,30 @@ class FlutterBarcodeScannerScanWindow {
   /// Corner radius, in logical pixels, for the scan-window overlay.
   final double cornerRadius;
 
+  /// Width factor after applying the native scanner's supported bounds.
+  double get effectiveWidthFactor => _normalizedFactor(
+    widthFactor,
+    minimum: 0.2,
+    maximum: 0.95,
+    fallback: 0.58,
+  );
+
+  /// Height factor after applying the native scanner's supported bounds.
+  double get effectiveHeightFactor => _normalizedFactor(
+    heightFactor,
+    minimum: 0.2,
+    maximum: 0.9,
+    fallback: 0.58,
+  );
+
+  /// Non-negative finite corner radius used by scanner overlays.
+  double get effectiveCornerRadius {
+    if (!cornerRadius.isFinite) {
+      return 18;
+    }
+    return cornerRadius < 0 ? 0 : cornerRadius;
+  }
+
   /// Returns a copy with selected values replaced.
   FlutterBarcodeScannerScanWindow copyWith({
     bool? enabled,
@@ -324,10 +353,22 @@ class FlutterBarcodeScannerScanWindow {
   /// Converts the scan window into the method-channel payload map.
   Map<String, Object?> toMap() => {
     'enabled': enabled,
-    'widthFactor': widthFactor,
-    'heightFactor': heightFactor,
-    'cornerRadius': cornerRadius,
+    'widthFactor': effectiveWidthFactor,
+    'heightFactor': effectiveHeightFactor,
+    'cornerRadius': effectiveCornerRadius,
   };
+
+  static double _normalizedFactor(
+    double value, {
+    required double minimum,
+    required double maximum,
+    required double fallback,
+  }) {
+    if (!value.isFinite) {
+      return fallback;
+    }
+    return value.clamp(minimum, maximum).toDouble();
+  }
 }
 
 /// Native scanner control visibility and initial camera settings.
@@ -540,20 +581,29 @@ class FlutterBarcodeScannerConfig {
   }
 
   /// Converts this configuration into the method-channel payload map.
-  Map<String, Object?> toPlatformMap() => {
-    'allowedFormats': allowedFormats
-        .map((format) => format.nativeValue)
-        .toList(),
-    'strings': strings.toMap(),
-    'scanWindow': scanWindow.toMap(),
-    'uiConfig': uiConfig.toMap(),
-    'statusBarStyle': statusBarStyle.toMap(),
-    'textDirection': textDirection?.name,
-    'appBarTransparent': appBarTransparent,
-    'appBarBackgroundColor': appBarBackgroundColor?.toARGB32(),
-    'appBarForegroundColor': appBarForegroundColor?.toARGB32(),
-    'overlayColor': overlayColor.toARGB32(),
-  };
+  Map<String, Object?> toPlatformMap() {
+    if (allowedFormats.contains(FlutterBarcodeScannerFormat.unknown)) {
+      throw ArgumentError.value(
+        allowedFormats,
+        'allowedFormats',
+        'FlutterBarcodeScannerFormat.unknown cannot be requested.',
+      );
+    }
+    return {
+      'allowedFormats': allowedFormats
+          .map((format) => format.nativeValue)
+          .toList(),
+      'strings': strings.toMap(),
+      'scanWindow': scanWindow.toMap(),
+      'uiConfig': uiConfig.toMap(),
+      'statusBarStyle': statusBarStyle.toMap(),
+      'textDirection': textDirection?.name,
+      'appBarTransparent': appBarTransparent,
+      'appBarBackgroundColor': appBarBackgroundColor?.toARGB32(),
+      'appBarForegroundColor': appBarForegroundColor?.toARGB32(),
+      'overlayColor': overlayColor.toARGB32(),
+    };
+  }
 }
 
 /// Result returned by full-screen scans and emitted by embedded scans.
@@ -564,6 +614,7 @@ class FlutterBarcodeScanResult {
     required this.type,
     required this.rawValue,
     required this.format,
+    this.nativeFormat,
     this.errorCode,
     this.errorMessage,
   });
@@ -578,6 +629,12 @@ class FlutterBarcodeScanResult {
 
   /// Detected barcode format.
   final FlutterBarcodeScannerFormat format;
+
+  /// Original format identifier received from the native implementation.
+  ///
+  /// This remains available when [format] is
+  /// [FlutterBarcodeScannerFormat.unknown].
+  final String? nativeFormat;
 
   /// Optional platform error code.
   final String? errorCode;
@@ -605,6 +662,8 @@ class FlutterBarcodeScanResult {
     FlutterBarcodeScannerResultType? type,
     String? rawValue,
     FlutterBarcodeScannerFormat? format,
+    String? nativeFormat,
+    bool clearNativeFormat = false,
     String? errorCode,
     bool clearErrorCode = false,
     String? errorMessage,
@@ -614,6 +673,9 @@ class FlutterBarcodeScanResult {
       type: type ?? this.type,
       rawValue: rawValue ?? this.rawValue,
       format: format ?? this.format,
+      nativeFormat: clearNativeFormat
+          ? null
+          : nativeFormat ?? this.nativeFormat,
       errorCode: clearErrorCode ? null : errorCode ?? this.errorCode,
       errorMessage: clearErrorMessage
           ? null
@@ -623,15 +685,15 @@ class FlutterBarcodeScanResult {
 
   /// Parses a result payload received from native platform code.
   static FlutterBarcodeScanResult fromMap(Map<Object?, Object?> map) {
+    final nativeFormat = map['format'] as String?;
     return FlutterBarcodeScanResult(
       type: FlutterBarcodeScannerResultType.values.firstWhere(
         (value) => value.name == map['type'],
         orElse: () => FlutterBarcodeScannerResultType.error,
       ),
       rawValue: (map['rawValue'] as String?) ?? '',
-      format: FlutterBarcodeScannerFormat.fromNativeValue(
-        map['format'] as String?,
-      ),
+      format: FlutterBarcodeScannerFormat.fromNativeValue(nativeFormat),
+      nativeFormat: nativeFormat,
       errorCode: map['errorCode'] as String?,
       errorMessage: map['errorMessage'] as String?,
     );

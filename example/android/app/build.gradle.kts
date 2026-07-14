@@ -1,14 +1,13 @@
-import com.android.build.gradle.AppExtension
-import com.flutter.gradle.FlutterExtension
+plugins {
+    id("com.android.application")
+    id("dev.flutter.flutter-gradle-plugin")
+}
 
-apply(plugin = "com.android.application")
-apply(plugin = "dev.flutter.flutter-gradle-plugin")
-
-extensions.configure<FlutterExtension>("flutter") {
+flutter {
     source = "../.."
 }
 
-extensions.configure<AppExtension>("android") {
+android {
     namespace = "com.example.flutter_barcode_scanner_sdk_example"
     compileSdkVersion(36)
     ndkVersion = "28.2.13676358"

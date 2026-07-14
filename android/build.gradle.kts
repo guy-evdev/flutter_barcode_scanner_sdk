@@ -77,10 +77,10 @@ tasks.withType<KotlinCompile>().configureEach {
 
 dependencies {
     add("implementation", "androidx.core:core-ktx:1.17.0")
-    add("implementation", "androidx.camera:camera-core:1.4.2")
-    add("implementation", "androidx.camera:camera-camera2:1.4.2")
-    add("implementation", "androidx.camera:camera-lifecycle:1.4.2")
-    add("implementation", "androidx.camera:camera-view:1.4.2")
+    add("implementation", "androidx.camera:camera-core:1.6.1")
+    add("implementation", "androidx.camera:camera-camera2:1.6.1")
+    add("implementation", "androidx.camera:camera-lifecycle:1.6.1")
+    add("implementation", "androidx.camera:camera-view:1.6.1")
     add("implementation", "com.google.mlkit:barcode-scanning:17.3.0")
     add("testImplementation", "org.jetbrains.kotlin:kotlin-test-junit5:2.3.20")
     add("testImplementation", "org.mockito:mockito-core:5.0.0")

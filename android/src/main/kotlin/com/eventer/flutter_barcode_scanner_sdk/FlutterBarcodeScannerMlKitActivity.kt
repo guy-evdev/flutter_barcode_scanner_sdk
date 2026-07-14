@@ -1,23 +1,22 @@
 package com.eventer.flutter_barcode_scanner_sdk
 
-import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Color
 import android.graphics.RectF
+import android.os.Build
 import android.os.Bundle
 import android.text.TextUtils
 import android.util.Size
 import android.view.Gravity
-import android.view.Surface
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.activity.addCallback
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -43,6 +42,7 @@ import com.google.mlkit.vision.common.InputImage
 import java.io.Serializable
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
     private lateinit var config: ScannerConfig
@@ -59,7 +59,7 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
     private var hasReturnedResult = false
     private var isFlashEnabled = false
     private var lensFacing = CameraSelector.LENS_FACING_BACK
-    private var isAnalyzerBusy = false
+    private val isAnalyzerBusy = AtomicBoolean(false)
     private val transformLock = Any()
     private var cachedOverlayRect = RectF()
     private var cachedPreviewTransform: OutputTransform? = null
@@ -79,7 +79,7 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        config = intent.getSerializableExtra(ScannerActivityContract.EXTRA_CONFIG) as? ScannerConfig
+        config = scannerConfigFromIntent()
             ?: ScannerConfig.fromMap(emptyMap<String, Serializable>())
         lensFacing =
             if (config.initialCameraLens == "front") {
@@ -90,6 +90,9 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
         isFlashEnabled = config.initialTorchEnabled
 
         requestedOrientation = resolveCurrentOrientation()
+        onBackPressedDispatcher.addCallback(this) {
+            finishWithPayload(ScannerActivityContract.cancelledResult())
+        }
         applyWindowStyle()
         setContentView(buildContentView())
         cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -112,57 +115,61 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    override fun onBackPressed() {
-        finishWithPayload(ScannerActivityContract.cancelledResult())
-    }
-
     private fun bindCamera() {
         cameraProviderFuture.addListener(
             {
-                val provider = cameraProviderFuture.get()
-                cameraProvider = provider
+                try {
+                    val provider = cameraProviderFuture.get()
+                    cameraProvider = provider
 
-                val selector = CameraSelector.Builder()
-                    .requireLensFacing(lensFacing)
-                    .build()
+                    val selector = CameraSelector.Builder()
+                        .requireLensFacing(lensFacing)
+                        .build()
 
-                preview = Preview.Builder().build().also { previewUseCase ->
-                    previewUseCase.surfaceProvider = previewView.surfaceProvider
-                }
-
-                analysis = ImageAnalysis.Builder()
-                    .setResolutionSelector(barcodeAnalysisResolutionSelector())
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .build()
-                    .also { analysisUseCase ->
-                        analysisUseCase.setAnalyzer(analysisExecutor) { imageProxy ->
-                            analyzeImage(imageProxy)
-                        }
+                    preview = Preview.Builder().build().also { previewUseCase ->
+                        previewUseCase.surfaceProvider = previewView.surfaceProvider
                     }
 
-                provider.unbindAll()
-                camera = provider.bindToLifecycle(this, selector, preview, analysis)
-                camera?.cameraControl?.enableTorch(isFlashEnabled)
-                previewView.post { refreshCachedPreviewData() }
-                updateFlashButtonUi()
+                    analysis = ImageAnalysis.Builder()
+                        .setResolutionSelector(barcodeAnalysisResolutionSelector())
+                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        .build()
+                        .also { analysisUseCase ->
+                            analysisUseCase.setAnalyzer(analysisExecutor) { imageProxy ->
+                                analyzeImage(imageProxy)
+                            }
+                        }
+
+                    provider.unbindAll()
+                    camera = provider.bindToLifecycle(this, selector, preview, analysis)
+                    if (camera?.cameraInfo?.hasFlashUnit() != true) {
+                        isFlashEnabled = false
+                    } else {
+                        setTorch(isFlashEnabled)
+                    }
+                    previewView.post { refreshCachedPreviewData() }
+                    updateCameraControlsUi()
+                } catch (error: Exception) {
+                    finishWithError(error.localizedMessage ?: config.strings.cameraUnavailable)
+                }
             },
             ContextCompat.getMainExecutor(this),
         )
     }
 
     private fun analyzeImage(imageProxy: androidx.camera.core.ImageProxy) {
-        if (hasReturnedResult || isAnalyzerBusy) {
+        if (hasReturnedResult || !isAnalyzerBusy.compareAndSet(false, true)) {
             imageProxy.close()
             return
         }
 
         val mediaImage = imageProxy.image
         if (mediaImage == null) {
+            isAnalyzerBusy.set(false)
             imageProxy.close()
             return
         }
 
-        isAnalyzerBusy = true
         val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
         val overlayRect: RectF
         val previewTransform: OutputTransform?
@@ -215,7 +222,7 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
                 }
             }
             .addOnCompleteListener {
-                isAnalyzerBusy = false
+                isAnalyzerBusy.set(false)
                 imageProxy.close()
             }
     }
@@ -373,9 +380,7 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             overlayStyle = true,
         ).apply {
             setOnClickListener {
-                isFlashEnabled = !isFlashEnabled
-                camera?.cameraControl?.enableTorch(isFlashEnabled)
-                updateFlashButtonUi()
+                setTorch(!isFlashEnabled)
             }
         }
         switchCameraButton = createIconButton(
@@ -407,22 +412,35 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
         }
 
         root.addView(topBar)
-        updateFlashButtonUi()
+        updateCameraControlsUi()
         return root
     }
 
     private fun toggleCamera() {
-        lensFacing =
+        val requestedLens =
             if (lensFacing == CameraSelector.LENS_FACING_FRONT) {
                 CameraSelector.LENS_FACING_BACK
             } else {
                 CameraSelector.LENS_FACING_FRONT
             }
+        val selector = CameraSelector.Builder().requireLensFacing(requestedLens).build()
+        val provider = cameraProvider ?: return
+        if (!runCatching { provider.hasCamera(selector) }.getOrDefault(false)) {
+            return
+        }
+        lensFacing = requestedLens
+        isFlashEnabled = false
         bindCamera()
     }
 
-    private fun updateFlashButtonUi() {
+    private fun updateCameraControlsUi() {
         if (::flashButton.isInitialized) {
+            flashButton.visibility =
+                if (config.showFlashButton && camera?.cameraInfo?.hasFlashUnit() == true) {
+                    View.VISIBLE
+                } else {
+                    View.GONE
+                }
             flashButton.alpha = if (isFlashEnabled) 1f else 0.84f
             flashButton.setImageResource(
                 if (isFlashEnabled) {
@@ -434,6 +452,34 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             flashButton.contentDescription =
                 if (isFlashEnabled) config.strings.flashOff else config.strings.flashOn
         }
+        if (::switchCameraButton.isInitialized) {
+            switchCameraButton.visibility =
+                if (config.showCameraSwitchButton && hasFrontAndBackCameras()) {
+                    View.VISIBLE
+                } else {
+                    View.GONE
+                }
+        }
+    }
+
+    private fun setTorch(enabled: Boolean) {
+        val activeCamera = camera
+        if (activeCamera == null || !activeCamera.cameraInfo.hasFlashUnit()) {
+            isFlashEnabled = false
+            updateCameraControlsUi()
+            return
+        }
+        val operation = activeCamera.cameraControl.enableTorch(enabled)
+        operation.addListener(
+            {
+                isFlashEnabled = runCatching {
+                    operation.get()
+                    enabled
+                }.getOrElse { false }
+                updateCameraControlsUi()
+            },
+            ContextCompat.getMainExecutor(this),
+        )
     }
 
     private fun createIconButton(
@@ -471,6 +517,18 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
         finish()
     }
 
+    private fun finishWithError(message: String) {
+        finishWithPayload(
+            hashMapOf(
+                "type" to "error",
+                "rawValue" to "",
+                "format" to "UNKNOWN",
+                "errorCode" to "CAMERA_UNAVAILABLE",
+                "errorMessage" to message,
+            ),
+        )
+    }
+
     private fun resolveMlKitFormats(): List<Int> {
         return config.allowedFormats.mapNotNull { format ->
             when (format) {
@@ -505,23 +563,14 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             Barcode.FORMAT_PDF417 -> "PDF_417"
             Barcode.FORMAT_DATA_MATRIX -> "DATA_MATRIX"
             Barcode.FORMAT_AZTEC -> "AZTEC"
-            else -> "QR_CODE"
+            else -> "UNKNOWN"
         }
     }
 
     private fun applyWindowStyle() {
         val controller = WindowInsetsControllerCompat(window, window.decorView)
         controller.isAppearanceLightStatusBars = config.statusBarIconBrightness == "dark"
-        if (config.statusBarTransparent) {
-            WindowCompat.setDecorFitsSystemWindows(window, false)
-            window.statusBarColor = Color.TRANSPARENT
-        } else {
-            WindowCompat.setDecorFitsSystemWindows(window, true)
-            window.statusBarColor =
-                config.resolveStatusBarBackground()
-                    ?: config.resolveAppBarBackground()
-                    ?: "#0A1C58".toColorInt()
-        }
+        WindowCompat.setDecorFitsSystemWindows(window, false)
     }
 
     private fun getStatusBarInset(): Int {
@@ -541,13 +590,18 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
     }
 
     private fun resolveCurrentOrientation(): Int {
-        val rotation = (getSystemService(Context.WINDOW_SERVICE) as WindowManager)
-            .defaultDisplay.rotation
-        return when (rotation) {
-            Surface.ROTATION_0 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            Surface.ROTATION_90 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            Surface.ROTATION_180 -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
-            else -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+        return ActivityInfo.SCREEN_ORIENTATION_LOCKED
+    }
+
+    private fun scannerConfigFromIntent(): ScannerConfig? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getSerializableExtra(
+                ScannerActivityContract.EXTRA_CONFIG,
+                ScannerConfig::class.java,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getSerializableExtra(ScannerActivityContract.EXTRA_CONFIG) as? ScannerConfig
         }
     }
 

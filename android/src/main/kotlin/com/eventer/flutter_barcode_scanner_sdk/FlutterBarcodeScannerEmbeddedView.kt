@@ -93,6 +93,7 @@ class FlutterBarcodeScannerEmbeddedView(
     private var shouldStartCamera = false
     private var startGeneration = 0
     private var isCameraRunning = false
+    private var hasEverStartedCamera = false
     private var isDetectionPaused = false
     private var isDisposed = false
     private var cachedOverlayRect = RectF()
@@ -164,12 +165,19 @@ class FlutterBarcodeScannerEmbeddedView(
             }
             "toggleFlash" -> {
                 val requested = (call.arguments as? Map<*, *>)?.get("enabled") as? Boolean
-                result.success(toggleFlash(requested))
+                toggleFlash(requested, result)
             }
             "switchCamera" -> {
                 val lens = (call.arguments as? Map<*, *>)?.get("lens") as? String
-                switchCamera(lens)
-                result.success(null)
+                if (switchCamera(lens)) {
+                    result.success(null)
+                } else {
+                    result.error(
+                        "CAMERA_UNAVAILABLE",
+                        "The requested camera lens is unavailable.",
+                        null,
+                    )
+                }
             }
             "updateConfig" -> {
                 updateConfig(call.arguments as? Map<*, *>)
@@ -266,7 +274,13 @@ class FlutterBarcodeScannerEmbeddedView(
             // CameraX report mismatched source/target viewports, which shifts
             // the barcode-to-preview coordinate transform used for ROI checks.
             camera = provider.bindToLifecycle(owner, selector, previewUseCase, analysisUseCase)
-            camera?.cameraControl?.enableTorch(isFlashEnabled)
+            hasEverStartedCamera = true
+            val boundCamera = camera
+            if (boundCamera?.cameraInfo?.hasFlashUnit() != true) {
+                isFlashEnabled = false
+            } else {
+                boundCamera.cameraControl.enableTorch(isFlashEnabled)
+            }
             shouldStartCamera = false
             isCameraRunning = true
             previewView.visibility = View.VISIBLE
@@ -319,14 +333,37 @@ class FlutterBarcodeScannerEmbeddedView(
         emitState("running")
     }
 
-    private fun toggleFlash(enabled: Boolean?): Boolean {
-        isFlashEnabled = enabled ?: !isFlashEnabled
-        camera?.cameraControl?.enableTorch(isFlashEnabled)
-        return isFlashEnabled
+    private fun toggleFlash(enabled: Boolean?, result: MethodChannel.Result) {
+        val activeCamera = camera
+        if (activeCamera == null || !isCameraRunning || !activeCamera.cameraInfo.hasFlashUnit()) {
+            isFlashEnabled = false
+            result.success(false)
+            return
+        }
+        val requested = enabled ?: !isFlashEnabled
+        val operation = activeCamera.cameraControl.enableTorch(requested)
+        operation.addListener(
+            {
+                try {
+                    operation.get()
+                    isFlashEnabled = requested
+                    result.success(isFlashEnabled)
+                } catch (error: Exception) {
+                    isFlashEnabled = activeCamera.cameraInfo.torchState.value == androidx.camera.core.TorchState.ON
+                    emitError("TORCH_UNAVAILABLE", error.localizedMessage ?: "Unable to change torch state")
+                    result.error(
+                        "TORCH_UNAVAILABLE",
+                        error.localizedMessage ?: "Unable to change torch state",
+                        null,
+                    )
+                }
+            },
+            ContextCompat.getMainExecutor(context),
+        )
     }
 
-    private fun switchCamera(lens: String?) {
-        lensFacing =
+    private fun switchCamera(lens: String?): Boolean {
+        val requestedLens =
             when (lens) {
                 "front" -> CameraSelector.LENS_FACING_FRONT
                 "back" -> CameraSelector.LENS_FACING_BACK
@@ -337,9 +374,20 @@ class FlutterBarcodeScannerEmbeddedView(
                         CameraSelector.LENS_FACING_FRONT
                     }
             }
+        if (requestedLens == lensFacing) {
+            return true
+        }
+        val selector = CameraSelector.Builder().requireLensFacing(requestedLens).build()
+        val provider = cameraProvider
+        if (provider != null && !runCatching { provider.hasCamera(selector) }.getOrDefault(false)) {
+            return false
+        }
+        lensFacing = requestedLens
+        isFlashEnabled = false
         if (isCameraRunning) {
             bindCamera()
         }
+        return true
     }
 
     private fun unbindCurrentUseCases(provider: ProcessCameraProvider) {
@@ -369,8 +417,10 @@ class FlutterBarcodeScannerEmbeddedView(
         config = nextConfig
         autoPauseOnScan = nextAutoPauseOnScan
         freezePreviewWhenPaused = nextFreezePreviewWhenPaused
-        lensFacing = if (config.initialCameraLens == "front") CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
-        isFlashEnabled = config.initialTorchEnabled
+        if (!hasEverStartedCamera) {
+            lensFacing = if (config.initialCameraLens == "front") CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
+            isFlashEnabled = config.initialTorchEnabled
+        }
         isDetectionPaused = wasPaused
         refreshCachedPreviewData()
         if (wasRunning) {
@@ -514,7 +564,7 @@ class FlutterBarcodeScannerEmbeddedView(
             Barcode.FORMAT_PDF417 -> "PDF_417"
             Barcode.FORMAT_DATA_MATRIX -> "DATA_MATRIX"
             Barcode.FORMAT_AZTEC -> "AZTEC"
-            else -> "QR_CODE"
+            else -> "UNKNOWN"
         }
     }
 

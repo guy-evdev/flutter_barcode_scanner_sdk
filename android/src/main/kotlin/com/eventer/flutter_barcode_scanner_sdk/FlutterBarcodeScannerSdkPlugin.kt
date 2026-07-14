@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -36,7 +37,8 @@ class FlutterBarcodeScannerSdkPlugin :
 
     private var pendingScanResult: MethodChannel.Result? = null
     private var pendingScanConfig: ScannerConfig? = null
-    private var pendingPermissionResult: MethodChannel.Result? = null
+    private val pendingPermissionResults = mutableListOf<MethodChannel.Result>()
+    private var permissionRequestInFlight = false
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         applicationContext = binding.applicationContext
@@ -49,6 +51,7 @@ class FlutterBarcodeScannerSdkPlugin :
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        failPendingOperations("PLUGIN_DETACHED", "Scanner plugin detached from the Flutter engine")
         methodChannel.setMethodCallHandler(null)
     }
 
@@ -69,6 +72,7 @@ class FlutterBarcodeScannerSdkPlugin :
 
     override fun onDetachedFromActivity() {
         detachActivity()
+        failPendingOperations("NO_ACTIVITY", "Scanner is not attached to an activity")
     }
 
     private fun detachActivity() {
@@ -106,11 +110,7 @@ class FlutterBarcodeScannerSdkPlugin :
             return
         }
 
-        ActivityCompat.requestPermissions(
-            hostActivity,
-            arrayOf(Manifest.permission.CAMERA),
-            REQUEST_PERMISSION,
-        )
+        requestCameraPermissionIfNeeded(hostActivity)
     }
 
     private fun handlePermissionRequest(result: MethodChannel.Result) {
@@ -123,18 +123,25 @@ class FlutterBarcodeScannerSdkPlugin :
             result.success(true)
             return
         }
-        pendingPermissionResult = result
-        ActivityCompat.requestPermissions(
-            hostActivity,
-            arrayOf(Manifest.permission.CAMERA),
-            REQUEST_PERMISSION,
-        )
+        pendingPermissionResults += result
+        requestCameraPermissionIfNeeded(hostActivity)
     }
 
     private fun launchScanner(hostActivity: Activity, config: ScannerConfig) {
-        val intent = Intent(hostActivity, FlutterBarcodeScannerMlKitActivity::class.java)
-        intent.putExtra(ScannerActivityContract.EXTRA_CONFIG, config)
-        hostActivity.startActivityForResult(intent, REQUEST_SCAN)
+        try {
+            val intent = Intent(hostActivity, FlutterBarcodeScannerMlKitActivity::class.java)
+            intent.putExtra(ScannerActivityContract.EXTRA_CONFIG, config)
+            @Suppress("DEPRECATION")
+            hostActivity.startActivityForResult(intent, REQUEST_SCAN)
+        } catch (error: RuntimeException) {
+            pendingScanResult?.error(
+                "CAMERA_UNAVAILABLE",
+                error.localizedMessage ?: config.strings.cameraUnavailable,
+                null,
+            )
+            pendingScanResult = null
+            pendingScanConfig = null
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
@@ -146,7 +153,7 @@ class FlutterBarcodeScannerSdkPlugin :
         pendingScanResult = null
         pendingScanConfig = null
 
-        val payload = data?.getSerializableExtra(ScannerActivityContract.EXTRA_RESULT) as? HashMap<*, *>
+        val payload = scannerResultFromIntent(data)
         @Suppress("UNCHECKED_CAST")
         result?.success(payload as? Map<String, Any?> ?: ScannerActivityContract.cancelledResult())
         return true
@@ -161,10 +168,15 @@ class FlutterBarcodeScannerSdkPlugin :
             return false
         }
 
-        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        permissionRequestInFlight = false
+        val cameraPermissionIndex = permissions.indexOf(Manifest.permission.CAMERA)
+        val granted = cameraPermissionIndex >= 0 &&
+            cameraPermissionIndex < grantResults.size &&
+            grantResults[cameraPermissionIndex] == PackageManager.PERMISSION_GRANTED
 
-        pendingPermissionResult?.let { permissionResult ->
-            pendingPermissionResult = null
+        val permissionResults = pendingPermissionResults.toList()
+        pendingPermissionResults.clear()
+        permissionResults.forEach { permissionResult ->
             permissionResult.success(granted)
         }
 
@@ -191,5 +203,50 @@ class FlutterBarcodeScannerSdkPlugin :
     private fun hasCameraPermission(context: Context): Boolean {
         return ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun scannerResultFromIntent(data: Intent?): HashMap<*, *>? {
+        if (data == null) {
+            return null
+        }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            data.getSerializableExtra(
+                ScannerActivityContract.EXTRA_RESULT,
+                HashMap::class.java,
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            data.getSerializableExtra(ScannerActivityContract.EXTRA_RESULT) as? HashMap<*, *>
+        }
+    }
+
+    private fun requestCameraPermissionIfNeeded(hostActivity: Activity) {
+        if (permissionRequestInFlight) {
+            return
+        }
+        permissionRequestInFlight = true
+        try {
+            ActivityCompat.requestPermissions(
+                hostActivity,
+                arrayOf(Manifest.permission.CAMERA),
+                REQUEST_PERMISSION,
+            )
+        } catch (error: RuntimeException) {
+            permissionRequestInFlight = false
+            failPendingOperations(
+                "PERMISSION_REQUEST_FAILED",
+                error.localizedMessage ?: "Unable to request camera permission",
+            )
+        }
+    }
+
+    private fun failPendingOperations(code: String, message: String) {
+        pendingScanResult?.error(code, message, null)
+        pendingScanResult = null
+        pendingScanConfig = null
+        val permissionResults = pendingPermissionResults.toList()
+        pendingPermissionResults.clear()
+        permissionResults.forEach { it.success(false) }
+        permissionRequestInFlight = false
     }
 }

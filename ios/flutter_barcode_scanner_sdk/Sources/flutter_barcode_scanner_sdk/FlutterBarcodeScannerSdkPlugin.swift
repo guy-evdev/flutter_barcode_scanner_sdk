@@ -7,6 +7,8 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
     private var methodChannel: FlutterMethodChannel?
     private weak var presenter: UIViewController?
     private weak var activeScannerViewController: ScannerViewController?
+    private var isScanPending = false
+    private var pendingScanResult: FlutterResult?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let instance = FlutterBarcodeScannerSdkPlugin()
@@ -36,8 +38,21 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    public func detachFromEngine(for registrar: FlutterPluginRegistrar) {
+        methodChannel?.setMethodCallHandler(nil)
+        activeScannerViewController?.dismiss(animated: false)
+        finishScan(
+            with: FlutterError(
+                code: "PLUGIN_DETACHED",
+                message: "Scanner plugin detached from the Flutter engine",
+                details: nil
+            )
+        )
+        methodChannel = nil
+    }
+
     private func handleScan(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-        if activeScannerViewController != nil {
+        if isScanPending || activeScannerViewController != nil {
             result(
                 FlutterError(
                     code: "SCAN_IN_PROGRESS",
@@ -48,13 +63,24 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
             return
         }
 
+        isScanPending = true
+        pendingScanResult = result
         requestCameraPermission { [weak self] granted in
-            guard let self else { return }
+            guard let self else {
+                result(
+                    FlutterError(
+                        code: "PLUGIN_DETACHED",
+                        message: "Scanner plugin detached before the scan could start",
+                        details: nil
+                    )
+                )
+                return
+            }
             let config = ScannerConfig(arguments: call.arguments as? [String: Any] ?? [:])
 
             guard granted else {
-                result(
-                    FlutterError(
+                self.finishScan(
+                    with: FlutterError(
                         code: "PERMISSION_DENIED",
                         message: config.strings.cameraPermissionRequired,
                         details: nil
@@ -64,8 +90,8 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
             }
 
             guard let presenter = self.resolvePresenter() else {
-                result(
-                    FlutterError(
+                self.finishScan(
+                    with: FlutterError(
                         code: "NO_VIEW_CONTROLLER",
                         message: "Scanner is not attached to a view controller",
                         details: nil
@@ -75,13 +101,25 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
             }
 
             let scannerViewController = ScannerViewController(config: config) { [weak self] payload in
-                self?.activeScannerViewController = nil
-                result(payload)
+                if let self {
+                    self.finishScan(with: payload)
+                } else {
+                    result(payload)
+                }
             }
             self.activeScannerViewController = scannerViewController
+            self.isScanPending = false
             scannerViewController.modalPresentationStyle = .fullScreen
             presenter.present(scannerViewController, animated: false)
         }
+    }
+
+    private func finishScan(with payload: Any?) {
+        let result = pendingScanResult
+        pendingScanResult = nil
+        activeScannerViewController = nil
+        isScanPending = false
+        result?(payload)
     }
 
     private func requestCameraPermission(_ completion: @escaping (Bool) -> Void) {
@@ -118,11 +156,7 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
             }
         }
 
-        let keyWindow =
-            UIApplication.shared.windows.first(where: \.isKeyWindow)
-            ?? UIApplication.shared.windows.first(where: { !$0.isHidden && $0.windowLevel == .normal })
-            ?? UIApplication.shared.windows.first
-        return topPresenter(from: keyWindow?.rootViewController)
+        return nil
     }
 
     private func topPresenter(from controller: UIViewController?) -> UIViewController? {
@@ -136,115 +170,6 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
             return topPresenter(from: presented)
         }
         return controller
-    }
-}
-
-private struct ScannerStrings {
-    let title: String
-    let close: String
-    let flashOn: String
-    let flashOff: String
-    let switchCamera: String
-    let cameraPermissionRequired: String
-    let cameraUnavailable: String
-
-    init(map: [String: Any]?) {
-        title = map?["title"] as? String ?? "Scan Ticket"
-        close = map?["close"] as? String ?? "Close"
-        flashOn = map?["flashOn"] as? String ?? "Flash on"
-        flashOff = map?["flashOff"] as? String ?? "Flash off"
-        switchCamera = map?["switchCamera"] as? String ?? "Switch camera"
-        cameraPermissionRequired =
-            map?["cameraPermissionRequired"] as? String ?? "Camera permission is required"
-        cameraUnavailable = map?["cameraUnavailable"] as? String ?? "Camera unavailable"
-    }
-}
-
-private struct ScannerConfig {
-    let allowedTypes: [AVMetadataObject.ObjectType]
-    let strings: ScannerStrings
-    let showFlashButton: Bool
-    let showCameraSwitchButton: Bool
-    let initialCameraPosition: AVCaptureDevice.Position
-    let initialTorchEnabled: Bool
-    let textDirection: UIUserInterfaceLayoutDirection?
-    let scanWindowEnabled: Bool
-    let scanWindowWidthFactor: CGFloat
-    let scanWindowHeightFactor: CGFloat
-    let scanWindowCornerRadius: CGFloat
-    let statusBarTransparent: Bool
-    let statusBarBackgroundColor: UIColor?
-    let statusBarIconStyle: UIStatusBarStyle
-    let appBarTransparent: Bool
-    let appBarBackgroundColor: UIColor?
-    let appBarForegroundColor: UIColor?
-    let overlayColor: UIColor
-
-    init(arguments: [String: Any]) {
-        let stringsMap = arguments["strings"] as? [String: Any]
-        let uiMap = arguments["uiConfig"] as? [String: Any]
-        let windowMap = arguments["scanWindow"] as? [String: Any]
-        let statusMap = arguments["statusBarStyle"] as? [String: Any]
-        let formatMap: [String: AVMetadataObject.ObjectType] = [
-            "QR_CODE": .qr,
-            "CODE_128": .code128,
-            "CODE_39": .code39,
-            "CODE_93": .code93,
-            "EAN_13": .ean13,
-            "EAN_8": .ean8,
-            "UPC_A": .ean13,
-            "UPC_E": .upce,
-            "ITF": .interleaved2of5,
-            "PDF_417": .pdf417,
-            "DATA_MATRIX": .dataMatrix,
-            "AZTEC": .aztec,
-        ]
-
-        let allAllowedTypes = Array(formatMap.values)
-        let allowedFormats = (arguments["allowedFormats"] as? [String] ?? [])
-            .compactMap { formatMap[$0] }
-        allowedTypes = allowedFormats.isEmpty ? allAllowedTypes : allowedFormats
-        strings = ScannerStrings(map: stringsMap)
-        showFlashButton = uiMap?["showFlashButton"] as? Bool ?? true
-        showCameraSwitchButton = uiMap?["showCameraSwitchButton"] as? Bool ?? true
-        initialCameraPosition =
-            (uiMap?["initialCameraLens"] as? String) == "front" ? .front : .back
-        initialTorchEnabled = uiMap?["initialTorchEnabled"] as? Bool ?? false
-        if (arguments["textDirection"] as? String) == "rtl" {
-            textDirection = .rightToLeft
-        } else if (arguments["textDirection"] as? String) == "ltr" {
-            textDirection = .leftToRight
-        } else {
-            textDirection = nil
-        }
-        scanWindowEnabled = windowMap?["enabled"] as? Bool ?? true
-        scanWindowWidthFactor =
-            CGFloat((windowMap?["widthFactor"] as? NSNumber)?.doubleValue ?? 0.58)
-        scanWindowHeightFactor =
-            CGFloat((windowMap?["heightFactor"] as? NSNumber)?.doubleValue ?? 0.58)
-        scanWindowCornerRadius =
-            CGFloat((windowMap?["cornerRadius"] as? NSNumber)?.doubleValue ?? 18)
-        statusBarTransparent = statusMap?["isTransparent"] as? Bool ?? false
-        statusBarBackgroundColor =
-            Self.color(from: statusMap?["backgroundColor"] as? NSNumber)
-        let iconBrightness = statusMap?["iconBrightness"] as? String ?? "light"
-        statusBarIconStyle = iconBrightness == "dark" ? .darkContent : .lightContent
-        appBarTransparent = arguments["appBarTransparent"] as? Bool ?? false
-        appBarBackgroundColor = Self.color(from: arguments["appBarBackgroundColor"] as? NSNumber)
-        appBarForegroundColor = Self.color(from: arguments["appBarForegroundColor"] as? NSNumber)
-        overlayColor =
-            Self.color(from: arguments["overlayColor"] as? NSNumber)
-            ?? UIColor.black.withAlphaComponent(0.6)
-    }
-
-    private static func color(from value: NSNumber?) -> UIColor? {
-        guard let value else { return nil }
-        let intValue = UInt32(truncating: value)
-        let alpha = CGFloat((intValue >> 24) & 0xFF) / 255.0
-        let red = CGFloat((intValue >> 16) & 0xFF) / 255.0
-        let green = CGFloat((intValue >> 8) & 0xFF) / 255.0
-        let blue = CGFloat(intValue & 0xFF) / 255.0
-        return UIColor(red: red, green: green, blue: blue, alpha: alpha)
     }
 }
 
@@ -369,8 +294,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
             width: 44,
             height: 44
         )
-        flashButton.isHidden = !config.showFlashButton
-        switchButton.isHidden = !config.showCameraSwitchButton
+        updateCameraControlAvailability()
 
         titleLabel.frame = CGRect(
             x: 56,
@@ -473,35 +397,43 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
             self.session.beginConfiguration()
             self.session.sessionPreset = .high
 
-            guard let device = self.camera(for: self.currentCameraPosition) else {
+            guard let device = ScannerCamera.device(for: self.currentCameraPosition) else {
                 self.session.commitConfiguration()
-#if targetEnvironment(simulator)
-                return
-#else
                 DispatchQueue.main.async {
                     self.finishWithError(self.config.strings.cameraUnavailable)
                 }
                 return
-#endif
             }
 
             do {
                 let input = try AVCaptureDeviceInput(device: device)
-                if self.session.canAddInput(input) {
-                    self.session.addInput(input)
-                    self.currentInput = input
+                guard self.session.canAddInput(input) else {
+                    throw NSError(
+                        domain: "flutter_barcode_scanner_sdk",
+                        code: 3,
+                        userInfo: [NSLocalizedDescriptionKey: "The camera input cannot be added to the capture session."]
+                    )
                 }
+                self.session.addInput(input)
+                self.currentInput = input
+                self.currentCameraPosition = device.position
 
-                if self.session.canAddOutput(self.metadataOutput) {
-                    self.session.addOutput(self.metadataOutput)
-                    self.metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
+                guard self.session.canAddOutput(self.metadataOutput) else {
+                    throw NSError(
+                        domain: "flutter_barcode_scanner_sdk",
+                        code: 4,
+                        userInfo: [NSLocalizedDescriptionKey: "Barcode metadata output is unavailable."]
+                    )
                 }
+                self.session.addOutput(self.metadataOutput)
+                self.metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
                 self.session.commitConfiguration()
                 self.applyMetadataObjectTypes()
                 self.session.startRunning()
 
-                if self.config.initialTorchEnabled {
-                    DispatchQueue.main.async {
+                DispatchQueue.main.async {
+                    self.updateCameraControlAvailability()
+                    if self.config.initialTorchEnabled {
                         self.setTorch(enabled: true)
                     }
                 }
@@ -531,53 +463,62 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
     }
 
     @objc private func toggleCamera() {
-        currentCameraPosition = currentCameraPosition == .back ? .front : .back
+        let requestedPosition: AVCaptureDevice.Position =
+            currentCameraPosition == .back ? .front : .back
         sessionQueue.async {
-            self.session.stopRunning()
-            self.session.beginConfiguration()
-            if let input = self.currentInput {
-                self.session.removeInput(input)
+            let wasRunning = self.session.isRunning
+            if wasRunning {
+                self.session.stopRunning()
             }
+            self.session.beginConfiguration()
+            let previousInput = self.currentInput
             do {
-                guard let device = self.camera(for: self.currentCameraPosition) else {
-                    self.session.commitConfiguration()
-                    return
+                guard let device = ScannerCamera.device(for: requestedPosition, allowFallback: false) else {
+                    throw NSError(
+                        domain: "flutter_barcode_scanner_sdk",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "The requested camera lens is unavailable."]
+                    )
                 }
                 let input = try AVCaptureDeviceInput(device: device)
-                if self.session.canAddInput(input) {
-                    self.session.addInput(input)
-                    self.currentInput = input
+                if let previousInput {
+                    self.session.removeInput(previousInput)
+                }
+                guard self.session.canAddInput(input) else {
+                    if let previousInput, self.session.canAddInput(previousInput) {
+                        self.session.addInput(previousInput)
+                    }
+                    throw NSError(
+                        domain: "flutter_barcode_scanner_sdk",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "The requested camera cannot be added to the capture session."]
+                    )
+                }
+                self.session.addInput(input)
+                self.currentInput = input
+                self.currentCameraPosition = requestedPosition
+                self.session.commitConfiguration()
+                if wasRunning {
+                    self.session.startRunning()
+                }
+                DispatchQueue.main.async {
+                    self.isTorchEnabled = false
+                    self.updateCameraControlAvailability()
+                }
+            } catch {
+                if let previousInput, !self.session.inputs.contains(previousInput), self.session.canAddInput(previousInput) {
+                    self.session.addInput(previousInput)
+                    self.currentInput = previousInput
                 }
                 self.session.commitConfiguration()
-                self.session.startRunning()
-            } catch {
-                self.session.commitConfiguration()
+                if wasRunning {
+                    self.session.startRunning()
+                }
+                DispatchQueue.main.async {
+                    self.updateCameraControlAvailability()
+                }
             }
         }
-    }
-
-    private func camera(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        if let defaultVideoDevice = AVCaptureDevice.default(for: .video) {
-            if position == .unspecified || defaultVideoDevice.position == position {
-                return defaultVideoDevice
-            }
-        }
-
-        let discoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: supportedDeviceTypes(),
-            mediaType: .video,
-            position: position
-        )
-        if let matchingDevice = discoverySession.devices.first {
-            return matchingDevice
-        }
-
-        let unspecifiedDiscoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: supportedDeviceTypes(),
-            mediaType: .video,
-            position: .unspecified
-        )
-        return unspecifiedDiscoverySession.devices.first
     }
 
     private func applyMetadataObjectTypes() {
@@ -592,31 +533,20 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
         metadataOutput.metadataObjectTypes = selectedTypes
     }
 
-    private func supportedDeviceTypes() -> [AVCaptureDevice.DeviceType] {
-        var deviceTypes: [AVCaptureDevice.DeviceType] = [
-            .builtInWideAngleCamera,
-            .builtInDualWideCamera,
-            .builtInDualCamera,
-            .builtInUltraWideCamera,
-            .builtInTelephotoCamera,
-            .builtInTrueDepthCamera,
-        ]
-        if #available(iOS 13.0, *) {
-            deviceTypes.append(.builtInTripleCamera)
-        }
-        return deviceTypes
-    }
-
     private func setTorch(enabled: Bool) {
-        guard let device = currentInput?.device, device.hasTorch else { return }
+        guard let device = currentInput?.device, device.hasTorch else {
+            isTorchEnabled = false
+            updateCameraControlAvailability()
+            return
+        }
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
             if enabled {
                 try device.setTorchModeOn(level: 1)
             } else {
                 device.torchMode = .off
             }
-            device.unlockForConfiguration()
             isTorchEnabled = enabled
             let symbol = enabled ? "bolt.slash.fill" : "bolt.fill"
             flashButton.setImage(
@@ -625,9 +555,30 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
             )
             flashButton.accessibilityLabel =
                 enabled ? config.strings.flashOff : config.strings.flashOn
+            updateCameraControlAvailability()
         } catch {
+            isTorchEnabled = device.torchMode == .on
+            updateCameraControlAvailability()
             return
         }
+    }
+
+    private func updateCameraControlAvailability() {
+        flashButton.isHidden =
+            !config.showFlashButton || currentInput?.device.hasTorch != true
+        let flashSymbol = isTorchEnabled ? "bolt.slash.fill" : "bolt.fill"
+        flashButton.setImage(
+            UIImage(systemName: flashSymbol)?.withRenderingMode(.alwaysTemplate),
+            for: .normal
+        )
+        flashButton.accessibilityLabel =
+            isTorchEnabled ? config.strings.flashOff : config.strings.flashOn
+        switchButton.isHidden =
+            !config.showCameraSwitchButton || !hasFrontAndBackCameras()
+    }
+
+    private func hasFrontAndBackCameras() -> Bool {
+        ScannerCamera.hasFrontAndBackCameras
     }
 
     private func configureOverlayButton(
@@ -671,7 +622,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                 [
                     "type": "barcode",
                     "rawValue": stringValue,
-                    "format": normalizedFormat(for: transformed.type),
+                    "format": ScannerFormat.normalized(for: transformed.type, value: stringValue),
                     "errorCode": NSNull(),
                     "errorMessage": NSNull(),
                 ]
@@ -716,34 +667,6 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
         }
     }
 
-    private func normalizedFormat(for type: AVMetadataObject.ObjectType) -> String {
-        switch type {
-        case .qr:
-            return "QR_CODE"
-        case .code128:
-            return "CODE_128"
-        case .code39:
-            return "CODE_39"
-        case .code93:
-            return "CODE_93"
-        case .ean13:
-            return "EAN_13"
-        case .ean8:
-            return "EAN_8"
-        case .upce:
-            return "UPC_E"
-        case .interleaved2of5:
-            return "ITF"
-        case .pdf417:
-            return "PDF_417"
-        case .dataMatrix:
-            return "DATA_MATRIX"
-        case .aztec:
-            return "AZTEC"
-        default:
-            return "QR_CODE"
-        }
-    }
 }
 
 private final class ScannerOverlayView: UIView {
@@ -850,8 +773,19 @@ private final class EmbeddedScannerPlatformView: NSObject, FlutterPlatformView {
             result(scannerView.toggleFlash(enabled: enabled))
         case "switchCamera":
             let lens = (call.arguments as? [String: Any])?["lens"] as? String
-            scannerView.switchCamera(lens: lens)
-            result(nil)
+            scannerView.switchCamera(lens: lens) { error in
+                if let error {
+                    result(
+                        FlutterError(
+                            code: "CAMERA_UNAVAILABLE",
+                            message: error.localizedDescription,
+                            details: nil
+                        )
+                    )
+                } else {
+                    result(nil)
+                }
+            }
         case "updateConfig":
             let arguments = call.arguments as? [String: Any] ?? [:]
             let widgetConfig = arguments["widgetConfig"] as? [String: Any]
@@ -888,6 +822,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     private var shouldStartSession = false
     private var startGeneration = 0
     private var isRunning = false
+    private var hasEverStartedSession = false
     private var isDetectionPaused = false
     private var isDisposed = false
     private var isTorchEnabled = false
@@ -1012,16 +947,86 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         return isTorchEnabled
     }
 
-    func switchCamera(lens: String?) {
+    func switchCamera(lens: String?, completion: @escaping (Error?) -> Void) {
+        let requestedPosition: AVCaptureDevice.Position
         if lens == "front" {
-            currentCameraPosition = .front
+            requestedPosition = .front
         } else if lens == "back" {
-            currentCameraPosition = .back
+            requestedPosition = .back
         } else {
-            currentCameraPosition = currentCameraPosition == .back ? .front : .back
+            requestedPosition = currentCameraPosition == .back ? .front : .back
         }
-        guard isRunning else { return }
-        configureAndStartSession(reconfigure: true)
+
+        guard requestedPosition != currentCameraPosition else {
+            completion(nil)
+            return
+        }
+
+        guard ScannerCamera.device(for: requestedPosition, allowFallback: false) != nil else {
+            completion(
+                NSError(
+                    domain: "flutter_barcode_scanner_sdk",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "The requested camera lens is unavailable."]
+                )
+            )
+            return
+        }
+
+        guard isRunning else {
+            currentCameraPosition = requestedPosition
+            isTorchEnabled = false
+            completion(nil)
+            return
+        }
+
+        sessionQueue.async {
+            let previousInput = self.currentInput
+            self.session.beginConfiguration()
+            do {
+                guard let device = ScannerCamera.device(for: requestedPosition, allowFallback: false) else {
+                    throw NSError(
+                        domain: "flutter_barcode_scanner_sdk",
+                        code: 1,
+                        userInfo: [NSLocalizedDescriptionKey: "The requested camera lens is unavailable."]
+                    )
+                }
+                let input = try AVCaptureDeviceInput(device: device)
+                if let previousInput {
+                    self.session.removeInput(previousInput)
+                }
+                guard self.session.canAddInput(input) else {
+                    if let previousInput, self.session.canAddInput(previousInput) {
+                        self.session.addInput(previousInput)
+                    }
+                    throw NSError(
+                        domain: "flutter_barcode_scanner_sdk",
+                        code: 2,
+                        userInfo: [NSLocalizedDescriptionKey: "The requested camera cannot be added to the capture session."]
+                    )
+                }
+                self.session.addInput(input)
+                self.currentInput = input
+                self.currentCameraPosition = requestedPosition
+                self.session.commitConfiguration()
+                DispatchQueue.main.async {
+                    self.isTorchEnabled = false
+                    completion(nil)
+                }
+            } catch {
+                if let previousInput,
+                    !self.session.inputs.contains(previousInput),
+                    self.session.canAddInput(previousInput)
+                {
+                    self.session.addInput(previousInput)
+                    self.currentInput = previousInput
+                }
+                self.session.commitConfiguration()
+                DispatchQueue.main.async {
+                    completion(error)
+                }
+            }
+        }
     }
 
     func updateConfig(
@@ -1042,8 +1047,10 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             }
         }
         requestedMetadataTypes = Self.uniqueTypes(config.allowedTypes)
-        currentCameraPosition = config.initialCameraPosition
-        isTorchEnabled = config.initialTorchEnabled
+        if !hasEverStartedSession {
+            currentCameraPosition = config.initialCameraPosition
+            isTorchEnabled = config.initialTorchEnabled
+        }
         updateScanWindow()
         sessionQueue.async {
             self.applyMetadataObjectTypes()
@@ -1105,7 +1112,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             }
 
             if self.currentInput == nil {
-                guard let device = self.camera(for: self.currentCameraPosition) else {
+                guard let device = ScannerCamera.device(for: self.currentCameraPosition) else {
 #if targetEnvironment(simulator)
                     self.session.commitConfiguration()
                     DispatchQueue.main.async {
@@ -1127,10 +1134,16 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
 
                 do {
                     let input = try AVCaptureDeviceInput(device: device)
-                    if self.session.canAddInput(input) {
-                        self.session.addInput(input)
-                        self.currentInput = input
+                    guard self.session.canAddInput(input) else {
+                        throw NSError(
+                            domain: "flutter_barcode_scanner_sdk",
+                            code: 3,
+                            userInfo: [NSLocalizedDescriptionKey: "The camera input cannot be added to the capture session."]
+                        )
                     }
+                    self.session.addInput(input)
+                    self.currentInput = input
+                    self.currentCameraPosition = device.position
                 } catch {
                     self.session.commitConfiguration()
                     DispatchQueue.main.async {
@@ -1142,7 +1155,16 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
                 }
             }
 
-            if !self.session.outputs.contains(self.metadataOutput), self.session.canAddOutput(self.metadataOutput) {
+            if !self.session.outputs.contains(self.metadataOutput) {
+                guard self.session.canAddOutput(self.metadataOutput) else {
+                    self.session.commitConfiguration()
+                    DispatchQueue.main.async {
+                        self.shouldStartSession = false
+                        self.emitError("CAMERA_UNAVAILABLE", "Barcode metadata output is unavailable.")
+                        self.emitState("error")
+                    }
+                    return
+                }
                 self.session.addOutput(self.metadataOutput)
                 self.metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
             }
@@ -1158,6 +1180,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             DispatchQueue.main.async {
                 self.shouldStartSession = false
                 self.isRunning = true
+                self.hasEverStartedSession = true
                 self.setTorch(enabled: self.isTorchEnabled)
                 self.emitState(self.isDetectionPaused ? "detectionPaused" : "running")
             }
@@ -1273,45 +1296,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         }
     }
 
-    private func camera(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        if let defaultVideoDevice = AVCaptureDevice.default(for: .video) {
-            if position == .unspecified || defaultVideoDevice.position == position {
-                return defaultVideoDevice
-            }
-        }
-
-        let discoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: supportedDeviceTypes(),
-            mediaType: .video,
-            position: position
-        )
-        if let matchingDevice = discoverySession.devices.first {
-            return matchingDevice
-        }
-
-        let unspecifiedDiscoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: supportedDeviceTypes(),
-            mediaType: .video,
-            position: .unspecified
-        )
-        return unspecifiedDiscoverySession.devices.first
-    }
-
-    private func supportedDeviceTypes() -> [AVCaptureDevice.DeviceType] {
-        var deviceTypes: [AVCaptureDevice.DeviceType] = [
-            .builtInWideAngleCamera,
-            .builtInDualWideCamera,
-            .builtInDualCamera,
-            .builtInUltraWideCamera,
-            .builtInTelephotoCamera,
-            .builtInTrueDepthCamera,
-        ]
-        if #available(iOS 13.0, *) {
-            deviceTypes.append(.builtInTripleCamera)
-        }
-        return deviceTypes
-    }
-
     private func setTorch(enabled: Bool) {
         guard let device = currentInput?.device, device.hasTorch else {
             isTorchEnabled = false
@@ -1319,12 +1303,12 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         }
         do {
             try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
             if enabled {
                 try device.setTorchModeOn(level: 1)
             } else {
                 device.torchMode = .off
             }
-            device.unlockForConfiguration()
             isTorchEnabled = enabled
         } catch {
             return
@@ -1337,7 +1321,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             [
                 "type": "barcode",
                 "rawValue": value,
-                "format": normalizedFormat(for: type),
+                "format": ScannerFormat.normalized(for: type, value: value),
                 "errorCode": NSNull(),
                 "errorMessage": NSNull(),
             ]
@@ -1362,35 +1346,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     private func emit(_ method: String, _ arguments: Any?) {
         DispatchQueue.main.async {
             self.channel.invokeMethod(method, arguments: arguments)
-        }
-    }
-
-    private func normalizedFormat(for type: AVMetadataObject.ObjectType) -> String {
-        switch type {
-        case .qr:
-            return "QR_CODE"
-        case .code128:
-            return "CODE_128"
-        case .code39:
-            return "CODE_39"
-        case .code93:
-            return "CODE_93"
-        case .ean13:
-            return "EAN_13"
-        case .ean8:
-            return "EAN_8"
-        case .upce:
-            return "UPC_E"
-        case .interleaved2of5:
-            return "ITF"
-        case .pdf417:
-            return "PDF_417"
-        case .dataMatrix:
-            return "DATA_MATRIX"
-        case .aztec:
-            return "AZTEC"
-        default:
-            return "QR_CODE"
         }
     }
 

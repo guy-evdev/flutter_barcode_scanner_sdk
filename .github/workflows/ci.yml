@@ -10,8 +10,12 @@ on:
 
 jobs:
   flutter:
-    name: Flutter
+    name: Flutter ${{ matrix.flutter-version }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flutter-version: [3.44.1, 3.44.6]
 
     steps:
       - name: Checkout
@@ -26,7 +30,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: 3.44.1
+          flutter-version: ${{ matrix.flutter-version }}
           channel: stable
           cache: true
 
@@ -42,6 +46,65 @@ jobs:
       - name: Test
         run: flutter test
 
+      - name: Test Android plugin
+        working-directory: example/android
+        run: ./gradlew :flutter_barcode_scanner_sdk:testDebugUnitTest
+
       - name: Build example Android debug APK
         working-directory: example
         run: flutter build apk --debug
+
+  ios:
+    name: iOS SwiftPM
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.6
+          channel: stable
+          cache: true
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build example iOS simulator app
+        working-directory: example
+        run: flutter build ios --simulator --debug
+
+      - name: Run iOS native tests
+        working-directory: example/ios
+        run: >-
+          xcodebuild test
+          -workspace Runner.xcworkspace
+          -scheme Runner
+          -destination 'platform=iOS Simulator,OS=latest,name=iPhone 17 Pro'
+
+  ios-cocoapods:
+    name: iOS CocoaPods compatibility
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.6
+          channel: stable
+          cache: true
+
+      - name: Disable Swift Package Manager for this compatibility build
+        run: flutter config --no-enable-swift-package-manager
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build example iOS simulator app with CocoaPods
+        working-directory: example
+        run: flutter build ios --simulator --debug

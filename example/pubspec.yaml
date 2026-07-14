@@ -1,6 +1,7 @@
 name: flutter_barcode_scanner_sdk_example
 description: Demonstrates how to use the flutter_barcode_scanner_sdk plugin.
 publish_to: "none"
+version: 1.0.0+1
 
 environment:
   sdk: ^3.12.0
