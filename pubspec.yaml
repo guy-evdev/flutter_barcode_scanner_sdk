@@ -1,6 +1,6 @@
 name: flutter_barcode_scanner_sdk
 description: High-throughput barcode and QR scanner SDK for Flutter apps.
-version: 0.1.1
+version: 0.1.2
 homepage: https://github.com/guy-evdev/flutter_barcode_scanner_sdk
 repository: https://github.com/guy-evdev/flutter_barcode_scanner_sdk
 

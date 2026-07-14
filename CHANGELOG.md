@@ -1,3 +1,10 @@
+## 0.1.2
+
+- Fixed an iOS `AVCaptureSession` crash caused by metadata output configuration
+  racing with camera startup.
+- Serialized embedded scanner metadata updates, layout updates, and disposal with
+  capture session startup and shutdown.
+
 ## 0.1.1
 
 - Improved dense 1D barcode scanning in full-screen and embedded modes.

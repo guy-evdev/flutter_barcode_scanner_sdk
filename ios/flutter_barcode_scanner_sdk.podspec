@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name             = 'flutter_barcode_scanner_sdk'
-  s.version          = '0.1.0'
+  s.version          = '0.1.2'
   s.summary          = 'High-throughput barcode and QR scanner SDK for Flutter apps.'
   s.description      = <<-DESC
 A native barcode and QR scanner plugin for Flutter applications with full-screen

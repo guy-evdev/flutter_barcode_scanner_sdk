@@ -251,6 +251,7 @@ private struct ScannerConfig {
 private final class ScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
     private let config: ScannerConfig
     private let completion: ([String: Any?]) -> Void
+    // Serialize every capture session and metadata output mutation on this queue.
     private let sessionQueue = DispatchQueue(label: "com.eventer.flutter_barcode_scanner_sdk.scanner")
 
     private let session = AVCaptureSession()
@@ -496,9 +497,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                     self.metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
                 }
                 self.session.commitConfiguration()
-                DispatchQueue.main.async {
-                    self.applyMetadataObjectTypes()
-                }
+                self.applyMetadataObjectTypes()
                 self.session.startRunning()
 
                 if self.config.initialTorchEnabled {
@@ -876,6 +875,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     private var autoPauseOnScan: Bool
     private var freezePreviewWhenPaused: Bool
     private let channel: FlutterMethodChannel
+    // Serialize every capture session and metadata output mutation on this queue.
     private let sessionQueue = DispatchQueue(label: "com.eventer.flutter_barcode_scanner_sdk.embedded")
     private let session = AVCaptureSession()
     private let previewLayer = AVCaptureVideoPreviewLayer()
@@ -937,7 +937,9 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         previewLayer.frame = bounds
         freezeImageView.frame = bounds
         updateScanWindow()
-        applyRectOfInterest()
+        sessionQueue.async {
+            self.applyRectOfInterest()
+        }
     }
 
     func startCamera() {
@@ -1043,8 +1045,10 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         currentCameraPosition = config.initialCameraPosition
         isTorchEnabled = config.initialTorchEnabled
         updateScanWindow()
-        applyMetadataObjectTypes()
-        applyRectOfInterest()
+        sessionQueue.async {
+            self.applyMetadataObjectTypes()
+            self.applyRectOfInterest()
+        }
         if isRunning {
             setTorch(enabled: isTorchEnabled)
         }
@@ -1053,7 +1057,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     func dispose() {
         guard !isDisposed else { return }
         isDisposed = true
-        metadataOutput.setMetadataObjectsDelegate(nil, queue: nil)
         let previewLayer = previewLayer
         if Thread.isMainThread {
             previewLayer.session = nil
@@ -1063,11 +1066,13 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             }
         }
         let session = session
+        let metadataOutput = metadataOutput
         let channel = channel
         sessionQueue.async {
             if session.isRunning {
                 session.stopRunning()
             }
+            metadataOutput.setMetadataObjectsDelegate(nil, queue: nil)
             session.beginConfiguration()
             for input in session.inputs {
                 session.removeInput(input)
@@ -1143,11 +1148,8 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             }
 
             self.session.commitConfiguration()
-
-            DispatchQueue.main.async {
-                self.applyMetadataObjectTypes()
-                self.applyRectOfInterest()
-            }
+            self.applyMetadataObjectTypes()
+            self.applyRectOfInterest()
 
             if !self.session.isRunning {
                 self.session.startRunning()
