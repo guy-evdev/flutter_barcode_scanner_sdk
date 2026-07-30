@@ -196,6 +196,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
     private var hasCompleted = false
     private var hasConfiguredSession = false
     private var isTorchEnabled = false
+    private var restartBudget = RestartBudget(maxAttempts: 3)
     private lazy var requestedMetadataTypes: [AVMetadataObject.ObjectType] = {
         var uniqueTypes: [AVMetadataObject.ObjectType] = []
         for type in config.allowedTypes where !uniqueTypes.contains(type) {
@@ -234,6 +235,64 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                 direction == .rightToLeft ? .forceRightToLeft : .forceLeftToRight
         }
         buildUi()
+        addSessionObservers()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func addSessionObservers() {
+        let center = NotificationCenter.default
+        center.addObserver(
+            self,
+            selector: #selector(sessionInterruptionEnded(_:)),
+            name: AVCaptureSession.interruptionEndedNotification,
+            object: session
+        )
+        center.addObserver(
+            self,
+            selector: #selector(sessionRuntimeError(_:)),
+            name: AVCaptureSession.runtimeErrorNotification,
+            object: session
+        )
+    }
+
+    /// Resumes the session once the system releases the camera.
+    ///
+    /// Without this a phone call taken mid-scan left the preview permanently black — the
+    /// scanner has no event channel of its own, so an interruption cannot be reported to Dart
+    /// and recovering silently is the only useful behaviour.
+    // AVFoundation does not document which thread posts these, so every handler hops to the
+    // main queue before touching state the rest of the controller owns there.
+    @objc private func sessionInterruptionEnded(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.hasCompleted else { return }
+            self.sessionQueue.async {
+                if !self.session.isRunning {
+                    self.session.startRunning()
+                }
+            }
+        }
+    }
+
+    @objc private func sessionRuntimeError(_ notification: Notification) {
+        let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.hasCompleted else { return }
+            guard ScannerSessionRecovery.isRecoverable(error), self.restartBudget.tryAgain() else {
+                self.finishWithError(
+                    error?.localizedDescription ?? self.config.strings.cameraUnavailable,
+                    code: ScannerSessionRecovery.runtimeErrorCode
+                )
+                return
+            }
+            self.sessionQueue.async {
+                if !self.session.isRunning {
+                    self.session.startRunning()
+                }
+            }
+        }
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -428,7 +487,15 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                 self.session.addOutput(self.metadataOutput)
                 self.metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
                 self.session.commitConfiguration()
-                self.applyMetadataObjectTypes()
+                guard !self.applyMetadataObjectTypes().isEmpty else {
+                    DispatchQueue.main.async {
+                        self.finishWithError(
+                            ScannerSessionRecovery.unsupportedFormatsMessage,
+                            code: ScannerSessionRecovery.unsupportedFormatsCode
+                        )
+                    }
+                    return
+                }
                 self.session.startRunning()
 
                 DispatchQueue.main.async {
@@ -447,15 +514,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
     }
 
     @objc private func cancelScan() {
-        finishWithPayload(
-            [
-                "type": "cancelled",
-                "rawValue": "",
-                "format": "QR_CODE",
-                "errorCode": NSNull(),
-                "errorMessage": NSNull(),
-            ]
-        )
+        finishWithPayload(ScannerPayload.cancelled())
     }
 
     @objc private func toggleFlash() {
@@ -521,16 +580,18 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
         }
     }
 
-    private func applyMetadataObjectTypes() {
-        let availableTypes = metadataOutput.availableMetadataObjectTypes
-        let selectedTypes: [AVMetadataObject.ObjectType]
-        if availableTypes.isEmpty {
-            selectedTypes = requestedMetadataTypes
-        } else {
-            let filteredTypes = requestedMetadataTypes.filter { availableTypes.contains($0) }
-            selectedTypes = filteredTypes.isEmpty ? availableTypes : filteredTypes
-        }
+    /// Applies exactly the requested formats the session reports as available.
+    ///
+    /// - Returns: the applied types. Empty means nothing will be detected — the caller must
+    ///   surface that rather than fall back to every available type.
+    @discardableResult
+    private func applyMetadataObjectTypes() -> [AVMetadataObject.ObjectType] {
+        let selectedTypes = ScannerFormat.supportedTypes(
+            requested: requestedMetadataTypes,
+            available: metadataOutput.availableMetadataObjectTypes
+        )
         metadataOutput.metadataObjectTypes = selectedTypes
+        return selectedTypes
     }
 
     private func setTorch(enabled: Bool) {
@@ -613,20 +674,17 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                     as? AVMetadataMachineReadableCodeObject,
                 let stringValue = transformed.stringValue,
                 !stringValue.isEmpty,
-                !config.scanWindowEnabled || isCodeCenteredInScanWindow(transformed)
+                !config.scanWindowEnabled || isCodeCenteredInScanWindow(transformed),
+                let format = ScannerFormat.resolve(
+                    for: transformed.type,
+                    value: stringValue,
+                    allowedFormatNames: config.allowedFormatNames
+                )
             else {
                 continue
             }
 
-            finishWithPayload(
-                [
-                    "type": "barcode",
-                    "rawValue": stringValue,
-                    "format": ScannerFormat.normalized(for: transformed.type, value: stringValue),
-                    "errorCode": NSNull(),
-                    "errorMessage": NSNull(),
-                ]
-            )
+            finishWithPayload(ScannerPayload.barcode(value: stringValue, format: format))
             break
         }
     }
@@ -638,16 +696,8 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
         return currentScanWindow.contains(CGPoint(x: code.bounds.midX, y: code.bounds.midY))
     }
 
-    private func finishWithError(_ message: String) {
-        finishWithPayload(
-            [
-                "type": "error",
-                "rawValue": "",
-                "format": "QR_CODE",
-                "errorCode": "CAMERA_UNAVAILABLE",
-                "errorMessage": message,
-            ]
-        )
+    private func finishWithError(_ message: String, code: String = "CAMERA_UNAVAILABLE") {
+        finishWithPayload(ScannerPayload.error(code: code, message: message))
     }
 
     private func finishWithPayload(_ payload: [String: Any?]) {
@@ -733,13 +783,11 @@ private final class EmbeddedScannerPlatformView: NSObject, FlutterPlatformView {
             binaryMessenger: messenger
         )
         let config = ScannerConfig(arguments: args?["config"] as? [String: Any] ?? [:])
-        let widgetConfig = args?["widgetConfig"] as? [String: Any]
         let autoStart = args?["autoStart"] as? Bool ?? true
         let autoPauseOnScan = args?["autoPauseOnScan"] as? Bool ?? true
         scannerView = EmbeddedScannerNativeView(
             frame: frame,
             config: config,
-            freezePreviewWhenPaused: widgetConfig?["freezePreviewWhenPaused"] as? Bool ?? false,
             autoStart: autoStart,
             autoPauseOnScan: autoPauseOnScan,
             channel: channel
@@ -788,11 +836,9 @@ private final class EmbeddedScannerPlatformView: NSObject, FlutterPlatformView {
             }
         case "updateConfig":
             let arguments = call.arguments as? [String: Any] ?? [:]
-            let widgetConfig = arguments["widgetConfig"] as? [String: Any]
             scannerView.updateConfig(
                 ScannerConfig(arguments: arguments),
-                autoPauseOnScan: arguments["autoPauseOnScan"] as? Bool,
-                freezePreviewWhenPaused: widgetConfig?["freezePreviewWhenPaused"] as? Bool
+                autoPauseOnScan: arguments["autoPauseOnScan"] as? Bool
             )
             result(nil)
         case "dispose":
@@ -807,13 +853,11 @@ private final class EmbeddedScannerPlatformView: NSObject, FlutterPlatformView {
 private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputObjectsDelegate {
     private var config: ScannerConfig
     private var autoPauseOnScan: Bool
-    private var freezePreviewWhenPaused: Bool
     private let channel: FlutterMethodChannel
     // Serialize every capture session and metadata output mutation on this queue.
     private let sessionQueue = DispatchQueue(label: "com.eventer.flutter_barcode_scanner_sdk.embedded")
     private let session = AVCaptureSession()
     private let previewLayer = AVCaptureVideoPreviewLayer()
-    private let freezeImageView = UIImageView()
     private let metadataOutput = AVCaptureMetadataOutput()
 
     private var currentInput: AVCaptureDeviceInput?
@@ -827,17 +871,16 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     private var isDisposed = false
     private var isTorchEnabled = false
     private var requestedMetadataTypes: [AVMetadataObject.ObjectType]
+    private var restartBudget = RestartBudget(maxAttempts: 3)
 
     init(
         frame: CGRect,
         config: ScannerConfig,
-        freezePreviewWhenPaused: Bool,
         autoStart: Bool,
         autoPauseOnScan: Bool,
         channel: FlutterMethodChannel
     ) {
         self.config = config
-        self.freezePreviewWhenPaused = freezePreviewWhenPaused
         self.autoPauseOnScan = autoPauseOnScan
         self.channel = channel
         self.currentCameraPosition = config.initialCameraPosition
@@ -848,9 +891,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         previewLayer.session = session
         previewLayer.videoGravity = .resizeAspectFill
         layer.addSublayer(previewLayer)
-        freezeImageView.contentMode = .scaleToFill
-        freezeImageView.isHidden = true
-        addSubview(freezeImageView)
+        addSessionObservers()
         if autoStart {
             startCamera()
         } else {
@@ -870,7 +911,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     override func layoutSubviews() {
         super.layoutSubviews()
         previewLayer.frame = bounds
-        freezeImageView.frame = bounds
         updateScanWindow()
         sessionQueue.async {
             self.applyRectOfInterest()
@@ -883,7 +923,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         startGeneration += 1
         let generation = startGeneration
         emitState("initializing")
-        clearFrozenPreview()
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             configureAndStartSession(generation: generation)
@@ -916,7 +955,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
                 self.session.stopRunning()
             }
             DispatchQueue.main.async {
-                self.clearFrozenPreview()
                 if emit && !self.isDisposed {
                     self.emitState("cameraStopped")
                 }
@@ -925,7 +963,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     }
 
     func pauseDetection() {
-        showFrozenPreview()
         isDetectionPaused = true
         if isRunning {
             emitState("detectionPaused")
@@ -938,7 +975,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             return
         }
         isDetectionPaused = false
-        clearFrozenPreview()
         emitState("running")
     }
 
@@ -1031,20 +1067,11 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
 
     func updateConfig(
         _ config: ScannerConfig,
-        autoPauseOnScan: Bool?,
-        freezePreviewWhenPaused: Bool?
+        autoPauseOnScan: Bool?
     ) {
         self.config = config
         if let autoPauseOnScan {
             self.autoPauseOnScan = autoPauseOnScan
-        }
-        if let freezePreviewWhenPaused {
-            self.freezePreviewWhenPaused = freezePreviewWhenPaused
-            if !freezePreviewWhenPaused {
-                clearFrozenPreview()
-            } else if isDetectionPaused {
-                showFrozenPreview()
-            }
         }
         requestedMetadataTypes = Self.uniqueTypes(config.allowedTypes)
         if !hasEverStartedSession {
@@ -1053,8 +1080,18 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         }
         updateScanWindow()
         sessionQueue.async {
-            self.applyMetadataObjectTypes()
+            let appliedTypes = self.applyMetadataObjectTypes()
             self.applyRectOfInterest()
+            // The session keeps running: a later updateConfig with a supported format set
+            // recovers, so reporting the error without forcing the error state is honest.
+            if appliedTypes.isEmpty, self.session.outputs.contains(self.metadataOutput) {
+                DispatchQueue.main.async {
+                    self.emitError(
+                        ScannerSessionRecovery.unsupportedFormatsCode,
+                        ScannerSessionRecovery.unsupportedFormatsMessage
+                    )
+                }
+            }
         }
         if isRunning {
             setTorch(enabled: isTorchEnabled)
@@ -1064,6 +1101,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     func dispose() {
         guard !isDisposed else { return }
         isDisposed = true
+        NotificationCenter.default.removeObserver(self)
         let previewLayer = previewLayer
         if Thread.isMainThread {
             previewLayer.session = nil
@@ -1170,8 +1208,20 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             }
 
             self.session.commitConfiguration()
-            self.applyMetadataObjectTypes()
+            let appliedTypes = self.applyMetadataObjectTypes()
             self.applyRectOfInterest()
+
+            guard !appliedTypes.isEmpty else {
+                DispatchQueue.main.async {
+                    self.shouldStartSession = false
+                    self.emitError(
+                        ScannerSessionRecovery.unsupportedFormatsCode,
+                        ScannerSessionRecovery.unsupportedFormatsMessage
+                    )
+                    self.emitState("error")
+                }
+                return
+            }
 
             if !self.session.isRunning {
                 self.session.startRunning()
@@ -1181,8 +1231,125 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
                 self.shouldStartSession = false
                 self.isRunning = true
                 self.hasEverStartedSession = true
+                self.restartBudget.reset()
                 self.setTorch(enabled: self.isTorchEnabled)
                 self.emitState(self.isDetectionPaused ? "detectionPaused" : "running")
+            }
+        }
+    }
+
+    private func addSessionObservers() {
+        let center = NotificationCenter.default
+        center.addObserver(
+            self,
+            selector: #selector(sessionWasInterrupted(_:)),
+            name: AVCaptureSession.wasInterruptedNotification,
+            object: session
+        )
+        center.addObserver(
+            self,
+            selector: #selector(sessionInterruptionEnded(_:)),
+            name: AVCaptureSession.interruptionEndedNotification,
+            object: session
+        )
+        center.addObserver(
+            self,
+            selector: #selector(sessionRuntimeError(_:)),
+            name: AVCaptureSession.runtimeErrorNotification,
+            object: session
+        )
+    }
+
+    // AVFoundation does not document which thread posts these notifications, so every handler
+    // hops to the main queue before touching state the rest of the view owns there.
+
+    /// Reports a system interruption — a phone call, another app taking the camera, screen
+    /// sharing — that the Flutter-side lifecycle handling cannot observe.
+    ///
+    /// No state is emitted: the scanner has no state that describes "interrupted", and every
+    /// existing value would misdescribe it. `interruptionEnded` re-emits the running state
+    /// once the camera comes back.
+    @objc private func sessionWasInterrupted(_ notification: Notification) {
+        let reason = (notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int)
+            .flatMap(AVCaptureSession.InterruptionReason.init(rawValue:))
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isDisposed, self.isRunning else { return }
+            self.emitError(
+                ScannerSessionRecovery.interruptedCode,
+                ScannerSessionRecovery.message(for: reason)
+            )
+        }
+    }
+
+    @objc private func sessionInterruptionEnded(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isDisposed, self.isRunning else { return }
+            self.resumeAfterInterruption()
+        }
+    }
+
+    private func resumeAfterInterruption() {
+        sessionQueue.async {
+            if !self.session.isRunning {
+                self.session.startRunning()
+            }
+            let resumed = self.session.isRunning
+            DispatchQueue.main.async {
+                guard !self.isDisposed, self.isRunning else { return }
+                if resumed {
+                    self.emitState(self.isDetectionPaused ? "detectionPaused" : "running")
+                } else {
+                    self.emitError(
+                        ScannerSessionRecovery.interruptedCode,
+                        ScannerSessionRecovery.resumeFailedMessage
+                    )
+                    self.emitState("error")
+                }
+            }
+        }
+    }
+
+    /// Recovers from `AVError.mediaServicesWereReset` by restarting, and reports anything else.
+    ///
+    /// Without this, a media-services reset left the preview black forever with no error.
+    @objc private func sessionRuntimeError(_ notification: Notification) {
+        let error = notification.userInfo?[AVCaptureSessionErrorKey] as? AVError
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isDisposed else { return }
+            guard ScannerSessionRecovery.isRecoverable(error),
+                self.isRunning,
+                self.restartBudget.tryAgain()
+            else {
+                self.isRunning = false
+                self.emitError(
+                    ScannerSessionRecovery.runtimeErrorCode,
+                    error?.localizedDescription ?? self.config.strings.cameraUnavailable
+                )
+                self.emitState("error")
+                return
+            }
+            self.restartAfterRuntimeError(error)
+        }
+    }
+
+    private func restartAfterRuntimeError(_ error: AVError?) {
+        sessionQueue.async {
+            if !self.session.isRunning {
+                self.session.startRunning()
+            }
+            let restarted = self.session.isRunning
+            DispatchQueue.main.async {
+                guard !self.isDisposed else { return }
+                if restarted {
+                    self.emitState(self.isDetectionPaused ? "detectionPaused" : "running")
+                } else {
+                    self.isRunning = false
+                    self.emitError(
+                        ScannerSessionRecovery.runtimeErrorCode,
+                        error?.localizedDescription ?? self.config.strings.cameraUnavailable
+                    )
+                    self.emitState("error")
+                }
             }
         }
     }
@@ -1213,17 +1380,19 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         )
     }
 
-    private func applyMetadataObjectTypes() {
-        guard session.outputs.contains(metadataOutput) else { return }
-        let availableTypes = metadataOutput.availableMetadataObjectTypes
-        let selectedTypes: [AVMetadataObject.ObjectType]
-        if availableTypes.isEmpty {
-            selectedTypes = requestedMetadataTypes
-        } else {
-            let filteredTypes = requestedMetadataTypes.filter { availableTypes.contains($0) }
-            selectedTypes = filteredTypes.isEmpty ? availableTypes : filteredTypes
-        }
+    /// Applies exactly the requested formats the session reports as available.
+    ///
+    /// - Returns: the applied types. Empty means nothing will be detected — the caller must
+    ///   surface that rather than fall back to every available type.
+    @discardableResult
+    private func applyMetadataObjectTypes() -> [AVMetadataObject.ObjectType] {
+        guard session.outputs.contains(metadataOutput) else { return [] }
+        let selectedTypes = ScannerFormat.supportedTypes(
+            requested: requestedMetadataTypes,
+            available: metadataOutput.availableMetadataObjectTypes
+        )
         metadataOutput.metadataObjectTypes = selectedTypes
+        return selectedTypes
     }
 
     private func applyRectOfInterest() {
@@ -1248,16 +1417,20 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
                     as? AVMetadataMachineReadableCodeObject,
                 let stringValue = transformed.stringValue,
                 !stringValue.isEmpty,
-                !config.scanWindowEnabled || isCodeCenteredInScanWindow(transformed)
+                !config.scanWindowEnabled || isCodeCenteredInScanWindow(transformed),
+                let format = ScannerFormat.resolve(
+                    for: transformed.type,
+                    value: stringValue,
+                    allowedFormatNames: config.allowedFormatNames
+                )
             else {
                 continue
             }
 
             if autoPauseOnScan {
-                showFrozenPreview()
                 isDetectionPaused = true
             }
-            emitResult(value: stringValue, type: transformed.type)
+            emitResult(value: stringValue, format: format)
             if autoPauseOnScan {
                 emitState("detectionPaused")
             }
@@ -1270,30 +1443,6 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             return true
         }
         return currentScanWindow.contains(CGPoint(x: code.bounds.midX, y: code.bounds.midY))
-    }
-
-    private func showFrozenPreview() {
-        guard freezePreviewWhenPaused, !bounds.isEmpty else { return }
-        DispatchQueue.main.async {
-            let wasHidden = self.freezeImageView.isHidden
-            self.freezeImageView.isHidden = true
-            let renderer = UIGraphicsImageRenderer(bounds: self.bounds)
-            let image = renderer.image { context in
-                self.layer.render(in: context.cgContext)
-            }
-            self.freezeImageView.image = image
-            self.freezeImageView.isHidden = false
-            if wasHidden {
-                self.bringSubviewToFront(self.freezeImageView)
-            }
-        }
-    }
-
-    private func clearFrozenPreview() {
-        DispatchQueue.main.async {
-            self.freezeImageView.image = nil
-            self.freezeImageView.isHidden = true
-        }
     }
 
     private func setTorch(enabled: Bool) {
@@ -1315,17 +1464,8 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
         }
     }
 
-    private func emitResult(value: String, type: AVMetadataObject.ObjectType) {
-        emit(
-            "onResult",
-            [
-                "type": "barcode",
-                "rawValue": value,
-                "format": ScannerFormat.normalized(for: type, value: value),
-                "errorCode": NSNull(),
-                "errorMessage": NSNull(),
-            ]
-        )
+    private func emitResult(value: String, format: String) {
+        emit("onResult", ScannerPayload.barcode(value: value, format: format))
     }
 
     private func emitState(_ state: String) {

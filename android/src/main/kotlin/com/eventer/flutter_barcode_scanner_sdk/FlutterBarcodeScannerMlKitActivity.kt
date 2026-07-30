@@ -545,7 +545,7 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             hashMapOf(
                 "type" to "error",
                 "rawValue" to "",
-                "format" to "UNKNOWN",
+                "format" to ScannerActivityContract.UNKNOWN_FORMAT,
                 "errorCode" to "CAMERA_UNAVAILABLE",
                 "errorMessage" to message,
             ),
