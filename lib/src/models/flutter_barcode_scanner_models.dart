@@ -425,6 +425,10 @@ class FlutterBarcodeScannerWidgetConfig {
   /// Creates embedded scanner widget configuration.
   const FlutterBarcodeScannerWidgetConfig({
     this.autoRequestCameraPermission = true,
+    @Deprecated(
+      'Has no effect. The preview now stays live while detection is paused. '
+      'This field is removed in 0.3.0.',
+    )
     this.freezePreviewWhenPaused = false,
     this.showPauseResumeButton = false,
     this.scanWindowBorderColor = Colors.white,
@@ -437,8 +441,21 @@ class FlutterBarcodeScannerWidgetConfig {
   /// native platform view.
   final bool autoRequestCameraPermission;
 
-  /// Whether the last camera frame should stay visible while detection is
-  /// paused.
+  /// No longer has any effect on either platform.
+  ///
+  /// The preview keeps showing live video while detection is paused. Use
+  /// [pausedScanWindowBorderColor] to signal the paused state.
+  ///
+  /// This never worked on iOS: the frozen frame was captured with
+  /// `CALayer.render(in:)`, which cannot draw `AVCaptureVideoPreviewLayer`
+  /// content, so the "frozen" preview was blank. On Android it allocated a
+  /// full-resolution bitmap on every scan, which is untenable for sustained
+  /// scanning. Both native implementations were removed in 0.2.1 rather than
+  /// repaired, and this field is removed in 0.3.0.
+  @Deprecated(
+    'Has no effect. The preview now stays live while detection is paused. '
+    'This field is removed in 0.3.0.',
+  )
   final bool freezePreviewWhenPaused;
 
   /// Whether the default overlay should include a pause/resume button.
@@ -459,6 +476,10 @@ class FlutterBarcodeScannerWidgetConfig {
   /// Returns a copy with selected values replaced.
   FlutterBarcodeScannerWidgetConfig copyWith({
     bool? autoRequestCameraPermission,
+    @Deprecated(
+      'Has no effect. The preview now stays live while detection is paused. '
+      'This parameter is removed in 0.3.0.',
+    )
     bool? freezePreviewWhenPaused,
     bool? showPauseResumeButton,
     Color? scanWindowBorderColor,
@@ -469,6 +490,9 @@ class FlutterBarcodeScannerWidgetConfig {
     return FlutterBarcodeScannerWidgetConfig(
       autoRequestCameraPermission:
           autoRequestCameraPermission ?? this.autoRequestCameraPermission,
+      // Carried until 0.3.0 removes the field, so a caller that still sets it
+      // keeps a faithful copy rather than a silently reset one.
+      // ignore: deprecated_member_use_from_same_package
       freezePreviewWhenPaused:
           freezePreviewWhenPaused ?? this.freezePreviewWhenPaused,
       showPauseResumeButton:
@@ -485,6 +509,9 @@ class FlutterBarcodeScannerWidgetConfig {
   /// Converts the widget configuration into the method-channel payload map.
   Map<String, Object?> toMap() => {
     'autoRequestCameraPermission': autoRequestCameraPermission,
+    // Native no longer reads this key. It stays on the wire until 0.3.0 so the
+    // channel contract does not change inside a patch release.
+    // ignore: deprecated_member_use_from_same_package
     'freezePreviewWhenPaused': freezePreviewWhenPaused,
     'showPauseResumeButton': showPauseResumeButton,
     'scanWindowBorderColor': scanWindowBorderColor.toARGB32(),

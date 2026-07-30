@@ -12,6 +12,15 @@ The package provides two native scanning modes:
 
 Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iOS plugin supports Swift Package Manager and CocoaPods.
 
+## When to use this package
+
+- **Decoding happens on-device.** No network call is made, and no barcode data leaves the phone.
+- **No Google Play services requirement.** Android decoding uses the bundled ML Kit barcode model, so it works on devices without Play services.
+- **Native decode paths on both platforms** — CameraX with ML Kit on Android, AVFoundation metadata output on iOS — rather than a single cross-platform decoder.
+- **Both embedded and full-screen modes** ship from one package and share their configuration.
+- **Built for sustained scanning**, where a shift means thousands of scans: detection pauses without rebinding the camera, and the example app ships a soak harness that reports memory, dropped frames, and decode latency.
+- **Not a fit if** you need web or desktop support, or barcode generation. This package is Android and iOS, scanning only.
+
 ## Contents
 
 - [Platform Support](#platform-support)
@@ -21,8 +30,10 @@ Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iO
 - [Embedded Scanner](#embedded-scanner)
 - [Format Presets](#format-presets)
 - [Example App](#example-app)
+- [Recipes](#recipes)
 - [API Reference](#api-reference)
 - [Compatibility](#compatibility)
+- [Migration](#migration)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
@@ -99,7 +110,6 @@ FlutterBarcodeScannerView(
   ),
   widgetConfig: const FlutterBarcodeScannerWidgetConfig(
     autoRequestCameraPermission: true,
-    freezePreviewWhenPaused: true,
     showPauseResumeButton: true,
   ),
   autoStart: true,
@@ -142,8 +152,9 @@ The bundled [example app](example) demonstrates:
 - Scan-window and whole-preview detection
 - RTL/LTR strings
 - Flash and camera switching
-- Auto-start, auto-pause, pause/resume, and freeze-preview behavior
+- Auto-start, auto-pause, and pause/resume behavior
 - App bar, status bar, overlay, and format preset options
+- A stress harness for sustained-scanning runs, in the app bar
 
 Run it with:
 
@@ -151,6 +162,12 @@ Run it with:
 cd example
 flutter run
 ```
+
+## Recipes
+
+See [RECIPES.md](RECIPES.md) for the continuous entry-scanning loop, custom overlays,
+scan-window geometry, error codes, and the platform differences between the Android and iOS
+engines.
 
 ## API Reference
 
@@ -162,6 +179,10 @@ Generated Dart API docs are available on pub.dev after publication.
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for supported Flutter, Android, iOS,
 SwiftPM/CocoaPods, dependency-update, and API-compatibility policies.
+
+## Migration
+
+See [MIGRATION.md](MIGRATION.md) for the code changes each release needs, newest first.
 
 ## Troubleshooting
 

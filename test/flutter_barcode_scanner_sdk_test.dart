@@ -187,6 +187,7 @@ void main() {
         const FlutterBarcodeScannerConfig(),
         autoPauseOnScan: false,
         widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+          // ignore: deprecated_member_use_from_same_package
           freezePreviewWhenPaused: true,
         ),
       );
@@ -249,6 +250,9 @@ void main() {
   test('widget config exposes expected platform map', () {
     const config = FlutterBarcodeScannerWidgetConfig(
       autoRequestCameraPermission: true,
+      // Deprecated and ignored by both platforms since 0.2.1. It stays on the
+      // wire until 0.3.0 removes the field, so the key is asserted on purpose.
+      // ignore: deprecated_member_use_from_same_package
       freezePreviewWhenPaused: true,
       showPauseResumeButton: true,
       scanWindowBorderColor: Colors.white,
