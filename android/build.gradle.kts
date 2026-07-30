@@ -1,21 +1,9 @@
 import com.android.build.gradle.LibraryExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
-import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.jetbrains.kotlin.gradle.dsl.KotlinAndroidProjectExtension
 
 group = "com.eventer.flutter_barcode_scanner_sdk"
 version = "1.0-SNAPSHOT"
-
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-    }
-
-    dependencies {
-        classpath("com.android.tools.build:gradle:9.0.1")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.20")
-    }
-}
 
 allprojects {
     repositories {
@@ -25,14 +13,20 @@ allprojects {
 }
 
 apply(plugin = "com.android.library")
-if (extensions.findByName("kotlin") == null) {
+
+// AGP 9.0 removed support for applying the Kotlin Gradle Plugin — Kotlin is built in from
+// that version on. Apps still on AGP 8 supply KGP themselves, so it only needs applying
+// there. This is Flutter's documented built-in-Kotlin guard for plugin authors; the AGP and
+// KGP buildscript classpaths are deliberately absent so the consuming app's versions win.
+val agpMajor = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.substringBefore('.').toInt()
+if (agpMajor < 9) {
     apply(plugin = "org.jetbrains.kotlin.android")
 }
 
 extensions.configure<LibraryExtension>("android") {
     namespace = "com.eventer.flutter_barcode_scanner_sdk"
 
-    compileSdkVersion(36)
+    compileSdk = 36
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -49,7 +43,7 @@ extensions.configure<LibraryExtension>("android") {
     }
 
     defaultConfig {
-        minSdkVersion(24)
+        minSdk = 24
     }
 
     testOptions {
@@ -69,7 +63,7 @@ extensions.configure<LibraryExtension>("android") {
     }
 }
 
-tasks.withType<KotlinCompile>().configureEach {
+extensions.configure(KotlinAndroidProjectExtension::class.java) {
     compilerOptions {
         jvmTarget.set(JvmTarget.JVM_17)
     }

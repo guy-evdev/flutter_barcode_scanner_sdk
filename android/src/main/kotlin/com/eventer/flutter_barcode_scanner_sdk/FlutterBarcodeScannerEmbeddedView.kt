@@ -4,18 +4,14 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
 import android.util.Size
-import android.view.TextureView
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
-import android.widget.ImageView
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
@@ -31,6 +27,7 @@ import androidx.camera.view.transform.ImageProxyTransformFactory
 import androidx.camera.view.transform.OutputTransform
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.google.android.gms.tasks.Task
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
@@ -75,13 +72,14 @@ class FlutterBarcodeScannerEmbeddedView(
     private val channel = MethodChannel(binaryMessenger, "flutter_barcode_scanner_sdk/scanner_view/$viewId")
     private val rootView = FrameLayout(context)
     private val previewView = PreviewView(context)
-    private val freezeView = ImageView(context)
     private val transformLock = Any()
+    private val scannerLock = Any()
     private val isProcessingFrame = AtomicBoolean(false)
+    private val startAttempts = StartAttemptBudget(MAX_START_ATTEMPTS)
+    private val startCameraRetry = Runnable { startCamera() }
 
     private var config = ScannerConfig.fromMap(args?.get("config") as? Map<*, *>)
     private var autoPauseOnScan = args?.get("autoPauseOnScan") as? Boolean ?: true
-    private var freezePreviewWhenPaused = freezePreviewWhenPausedFrom(args)
     private var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var camera: Camera? = null
@@ -92,27 +90,25 @@ class FlutterBarcodeScannerEmbeddedView(
     private var isFlashEnabled = config.initialTorchEnabled
     private var shouldStartCamera = false
     private var startGeneration = 0
-    private var isCameraRunning = false
     private var hasEverStartedCamera = false
-    private var isDetectionPaused = false
-    private var isDisposed = false
+    private var isStartDeferred = false
     private var cachedOverlayRect = RectF()
     private var cachedPreviewTransform: OutputTransform? = null
-    private var frozenBitmap: Bitmap? = null
+
+    // Read from the analysis executor while the main thread writes them.
+    @Volatile
+    private var isCameraRunning = false
+
+    @Volatile
+    private var isDetectionPaused = false
+
+    @Volatile
+    private var isDisposed = false
 
     init {
         rootView.setBackgroundColor(Color.BLACK)
         rootView.addView(
             previewView,
-            FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ),
-        )
-        freezeView.scaleType = ImageView.ScaleType.FIT_XY
-        freezeView.visibility = View.GONE
-        rootView.addView(
-            freezeView,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -124,6 +120,11 @@ class FlutterBarcodeScannerEmbeddedView(
         previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
         previewView.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             refreshCachedPreviewData()
+            // A parent that was collapsed when start was requested can gain a size later;
+            // pick the abandoned start back up rather than staying dark.
+            if (isStartDeferred && previewView.width > 0 && previewView.height > 0) {
+                startCamera()
+            }
         }
         channel.setMethodCallHandler(this)
         if (args?.get("autoStart") as? Boolean ?: true) {
@@ -137,11 +138,13 @@ class FlutterBarcodeScannerEmbeddedView(
 
     override fun dispose() {
         isDisposed = true
+        mainHandler.removeCallbacks(startCameraRetry)
         stopCamera(emitState = false)
-        barcodeScanner?.close()
-        barcodeScanner = null
+        closeScanner()
         channel.setMethodCallHandler(null)
-        analysisExecutor.shutdownNow()
+        // shutdown(), not shutdownNow(): interrupting a running analyzer task can abandon its
+        // ImageProxy, and CameraX never gets that buffer back.
+        analysisExecutor.shutdown()
         emitState("disposed")
     }
 
@@ -196,10 +199,29 @@ class FlutterBarcodeScannerEmbeddedView(
             return
         }
         if (previewView.width <= 0 || previewView.height <= 0) {
-            emitState("initializing")
-            previewView.post { startCamera() }
+            // Retries are capped and delayed: a zero-height Flutter parent never lays the
+            // preview out, and re-posting without a bound spins the main thread forever.
+            if (!startAttempts.tryAgain()) {
+                startAttempts.reset()
+                emitError(
+                    "PREVIEW_UNAVAILABLE",
+                    "The scanner preview was never given a size by its parent.",
+                )
+                emitState("error")
+                return
+            }
+            if (startAttempts.attempts == 1) {
+                emitState("initializing")
+            }
+            isStartDeferred = true
+            // A start requested from Dart while a retry is already pending must not leave two
+            // chains re-posting against one budget.
+            mainHandler.removeCallbacks(startCameraRetry)
+            mainHandler.postDelayed(startCameraRetry, START_RETRY_DELAY_MS)
             return
         }
+        isStartDeferred = false
+        startAttempts.reset()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             emitError("PERMISSION_DENIED", config.strings.cameraPermissionRequired)
             emitState("error")
@@ -207,12 +229,11 @@ class FlutterBarcodeScannerEmbeddedView(
         }
 
         previewView.visibility = View.VISIBLE
-        clearFrozenPreview()
         shouldStartCamera = true
         startGeneration += 1
         val generation = startGeneration
         emitState("initializing")
-        ensureScanner()
+        prewarmScanner()
         val future = cameraProviderFuture ?: ProcessCameraProvider.getInstance(context).also {
             cameraProviderFuture = it
         }
@@ -294,6 +315,9 @@ class FlutterBarcodeScannerEmbeddedView(
     }
 
     private fun stopCamera(emitState: Boolean = true) {
+        mainHandler.removeCallbacks(startCameraRetry)
+        isStartDeferred = false
+        startAttempts.reset()
         shouldStartCamera = false
         startGeneration += 1
         isCameraRunning = false
@@ -304,19 +328,16 @@ class FlutterBarcodeScannerEmbeddedView(
         preview = null
         analysis = null
         camera = null
-        barcodeScanner?.close()
-        barcodeScanner = null
+        closeScanner()
         previewView.post {
             previewView.visibility = View.INVISIBLE
         }
-        clearFrozenPreview()
         if (emitState && !isDisposed) {
             emitState("cameraStopped")
         }
     }
 
     private fun pauseDetection() {
-        showFrozenPreview()
         isDetectionPaused = true
         if (isCameraRunning) {
             emitState("detectionPaused")
@@ -329,7 +350,6 @@ class FlutterBarcodeScannerEmbeddedView(
             return
         }
         isDetectionPaused = false
-        clearFrozenPreview()
         emitState("running")
     }
 
@@ -390,6 +410,12 @@ class FlutterBarcodeScannerEmbeddedView(
         return true
     }
 
+    /**
+     * Unbinds only the use cases this view owns.
+     *
+     * `ProcessCameraProvider` is a process-wide singleton, so `unbindAll()` here would also
+     * tear down the full-screen scanner activity's bindings, and vice versa.
+     */
     private fun unbindCurrentUseCases(provider: ProcessCameraProvider) {
         val useCases = listOfNotNull<UseCase>(preview, analysis)
         if (useCases.isNotEmpty()) {
@@ -400,23 +426,29 @@ class FlutterBarcodeScannerEmbeddedView(
     private fun updateConfig(arguments: Map<*, *>?) {
         val nextConfig = ScannerConfig.fromMap(arguments)
         val nextAutoPauseOnScan = (arguments?.get("autoPauseOnScan") as? Boolean) ?: autoPauseOnScan
-        val nextFreezePreviewWhenPaused = freezePreviewWhenPausedFrom(arguments)
-        if (nextConfig == config) {
+        // Diff by field: only formats and the pre-start lens affect the bound use cases, so a
+        // changed label, overlay colour or scan-window factor is applied without a rebind.
+        val needsRebind = ScannerUpdatePolicy.requiresCameraRebind(
+            current = config,
+            next = nextConfig,
+            hasEverStartedCamera = hasEverStartedCamera,
+        )
+
+        if (!needsRebind) {
+            config = nextConfig
             autoPauseOnScan = nextAutoPauseOnScan
-            freezePreviewWhenPaused = nextFreezePreviewWhenPaused
-            if (!freezePreviewWhenPaused) {
-                clearFrozenPreview()
-            } else if (isDetectionPaused) {
-                showFrozenPreview()
+            if (!hasEverStartedCamera) {
+                isFlashEnabled = config.initialTorchEnabled
             }
+            refreshCachedPreviewData()
             return
         }
+
         val wasRunning = isCameraRunning
         val wasPaused = isDetectionPaused
         stopCamera(emitState = false)
         config = nextConfig
         autoPauseOnScan = nextAutoPauseOnScan
-        freezePreviewWhenPaused = nextFreezePreviewWhenPaused
         if (!hasEverStartedCamera) {
             lensFacing = if (config.initialCameraLens == "front") CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
             isFlashEnabled = config.initialTorchEnabled
@@ -434,57 +466,63 @@ class FlutterBarcodeScannerEmbeddedView(
             return
         }
 
-        val mediaImage = imageProxy.image
-        if (mediaImage == null) {
-            isProcessingFrame.set(false)
-            imageProxy.close()
-            return
-        }
+        // Every path out of this method either hands the proxy to the completion listener or
+        // closes it here; an unclosed ImageProxy permanently withholds a CameraX buffer.
+        var handedOff = false
+        try {
+            val mediaImage = imageProxy.image ?: return
 
-        val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
-        val overlayRect: RectF
-        val previewTransform: OutputTransform?
-        synchronized(transformLock) {
-            previewTransform = cachedPreviewTransform
-            overlayRect = RectF(cachedOverlayRect)
-        }
-        if (previewTransform == null || (config.scanWindowEnabled && overlayRect.isEmpty)) {
-            previewView.post { refreshCachedPreviewData() }
-        }
-        val imageTransform =
-            ImageProxyTransformFactory()
-                .apply {
-                    isUsingCropRect = true
-                    isUsingRotationDegrees = true
-                }
-                .getOutputTransform(imageProxy)
-        val coordinateTransform = previewTransform?.let { CoordinateTransform(imageTransform, it) }
-
-        ensureScanner().process(inputImage)
-            .addOnSuccessListener(ContextCompat.getMainExecutor(context)) { barcodes ->
-                if (isDisposed || isDetectionPaused) {
-                    return@addOnSuccessListener
-                }
-                val matchedBarcode = barcodes.firstOrNull { barcode ->
-                    barcode.rawValue?.isNotBlank() == true &&
-                        (!config.scanWindowEnabled ||
-                            (coordinateTransform != null && isBarcodeInsideOverlay(barcode, overlayRect, coordinateTransform)))
-                }
-                if (matchedBarcode != null) {
-                    if (autoPauseOnScan) {
-                        showFrozenPreview()
-                        isDetectionPaused = true
-                    }
-                    emitResult(matchedBarcode)
-                    if (autoPauseOnScan) {
-                        emitState("detectionPaused")
-                    }
-                }
+            val inputImage = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
+            val overlayRect: RectF
+            val previewTransform: OutputTransform?
+            synchronized(transformLock) {
+                previewTransform = cachedPreviewTransform
+                overlayRect = RectF(cachedOverlayRect)
             }
-            .addOnCompleteListener(ContextCompat.getMainExecutor(context)) {
+            if (previewTransform == null || (config.scanWindowEnabled && overlayRect.isEmpty)) {
+                previewView.post { refreshCachedPreviewData() }
+            }
+            val imageTransform =
+                ImageProxyTransformFactory()
+                    .apply {
+                        isUsingCropRect = true
+                        isUsingRotationDegrees = true
+                    }
+                    .getOutputTransform(imageProxy)
+            val coordinateTransform = previewTransform?.let { CoordinateTransform(imageTransform, it) }
+
+            val detection = processFrame(inputImage) ?: return
+            detection
+                .addOnSuccessListener(ContextCompat.getMainExecutor(context)) { barcodes ->
+                    if (isDisposed || isDetectionPaused) {
+                        return@addOnSuccessListener
+                    }
+                    val matchedBarcode = barcodes.firstOrNull { barcode ->
+                        barcode.rawValue?.isNotBlank() == true &&
+                            (!config.scanWindowEnabled ||
+                                (coordinateTransform != null && isBarcodeInsideOverlay(barcode, overlayRect, coordinateTransform)))
+                    }
+                    if (matchedBarcode != null) {
+                        if (autoPauseOnScan) {
+                            isDetectionPaused = true
+                        }
+                        emitResult(matchedBarcode)
+                        if (autoPauseOnScan) {
+                            emitState("detectionPaused")
+                        }
+                    }
+                }
+                .addOnCompleteListener(ContextCompat.getMainExecutor(context)) {
+                    isProcessingFrame.set(false)
+                    imageProxy.close()
+                }
+            handedOff = true
+        } finally {
+            if (!handedOff) {
                 isProcessingFrame.set(false)
                 imageProxy.close()
             }
+        }
     }
 
     private fun isBarcodeInsideOverlay(
@@ -513,21 +551,51 @@ class FlutterBarcodeScannerEmbeddedView(
             .build()
     }
 
-    private fun ensureScanner(): BarcodeScanner {
-        val current = barcodeScanner
-        if (current != null) {
-            return current
+    /**
+     * Runs detection for one frame, or returns null once this view is disposed.
+     *
+     * The scanner reference is taken and [BarcodeScanner.process] is invoked while holding
+     * [scannerLock], which [closeScanner] also takes. Without that, `stopCamera` or `dispose`
+     * on the main thread could close the detector between the two, and a frame arriving after
+     * dispose could build a replacement detector that nothing ever closes.
+     */
+    private fun processFrame(inputImage: InputImage): Task<List<Barcode>>? {
+        synchronized(scannerLock) {
+            if (isDisposed) {
+                return null
+            }
+            val scanner = barcodeScanner ?: createScanner().also { barcodeScanner = it }
+            return scanner.process(inputImage)
         }
+    }
+
+    /** Builds the detector ahead of the first frame so start does not pay model setup twice. */
+    private fun prewarmScanner() {
+        synchronized(scannerLock) {
+            if (isDisposed || barcodeScanner != null) {
+                return
+            }
+            barcodeScanner = createScanner()
+        }
+    }
+
+    private fun closeScanner() {
+        synchronized(scannerLock) {
+            barcodeScanner?.close()
+            barcodeScanner = null
+        }
+    }
+
+    private fun createScanner(): BarcodeScanner {
+        val formats = resolveMlKitFormats()
         return BarcodeScanning.getClient(
             BarcodeScannerOptions.Builder()
                 .setBarcodeFormats(
-                    resolveMlKitFormats().firstOrNull() ?: Barcode.FORMAT_QR_CODE,
-                    *resolveMlKitFormats().drop(1).toIntArray(),
+                    formats.first(),
+                    *formats.drop(1).toIntArray(),
                 )
                 .build(),
-        ).also { scanner ->
-            barcodeScanner = scanner
-        }
+        )
     }
 
     private fun resolveMlKitFormats(): List<Int> {
@@ -591,70 +659,6 @@ class FlutterBarcodeScannerEmbeddedView(
         return RectF(left, top, left + width, top + height)
     }
 
-    private fun showFrozenPreview() {
-        if (!freezePreviewWhenPaused || previewView.width <= 0 || previewView.height <= 0) {
-            return
-        }
-        mainHandler.post {
-            val bitmap = snapshotPreviewBitmap() ?: return@post
-            recycleFrozenBitmap()
-            frozenBitmap = bitmap
-            freezeView.setImageBitmap(bitmap)
-            freezeView.visibility = View.VISIBLE
-        }
-    }
-
-    private fun clearFrozenPreview() {
-        mainHandler.post {
-            freezeView.setImageDrawable(null)
-            freezeView.visibility = View.GONE
-            recycleFrozenBitmap()
-        }
-    }
-
-    private fun recycleFrozenBitmap() {
-        frozenBitmap?.takeIf { !it.isRecycled }?.recycle()
-        frozenBitmap = null
-    }
-
-    private fun freezePreviewWhenPausedFrom(arguments: Map<*, *>?): Boolean {
-        val widgetConfig = arguments?.get("widgetConfig") as? Map<*, *>
-        return widgetConfig?.get("freezePreviewWhenPaused") as? Boolean ?: false
-    }
-
-    private fun snapshotPreviewBitmap(): Bitmap? {
-        val textureBitmap = findTextureView(previewView)?.bitmap
-        if (textureBitmap != null) {
-            return textureBitmap
-        }
-
-        val previewBitmap = previewView.bitmap
-        if (previewBitmap != null) {
-            return previewBitmap
-        }
-
-        return runCatching {
-            Bitmap.createBitmap(previewView.width, previewView.height, Bitmap.Config.ARGB_8888).also { bitmap ->
-                previewView.draw(Canvas(bitmap))
-            }
-        }.getOrNull()
-    }
-
-    private fun findTextureView(view: View): TextureView? {
-        if (view is TextureView) {
-            return view
-        }
-        if (view is ViewGroup) {
-            for (index in 0 until view.childCount) {
-                val textureView = findTextureView(view.getChildAt(index))
-                if (textureView != null) {
-                    return textureView
-                }
-            }
-        }
-        return null
-    }
-
     private fun emitResult(barcode: Barcode) {
         invokeOnMain(
             "onResult",
@@ -689,5 +693,11 @@ class FlutterBarcodeScannerEmbeddedView(
                 channel.invokeMethod(method, arguments)
             }
         }
+    }
+
+    private companion object {
+        /** Layout retries before giving up, at [START_RETRY_DELAY_MS] apart — about 2 seconds. */
+        const val MAX_START_ATTEMPTS = 40
+        const val START_RETRY_DELAY_MS = 50L
     }
 }
