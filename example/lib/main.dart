@@ -1,6 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_barcode_scanner_sdk/flutter_barcode_scanner_sdk.dart';
 
+import 'mount_cycle_page.dart';
+import 'stress_harness_page.dart';
+
+/// Selects a harness to run unattended, set with
+/// `--dart-define=HARNESS_AUTORUN=cycles`.
+///
+/// Physical iPhones cannot be driven by injected taps the way an Android device
+/// can, so the harness has to start itself and report over the log.
+const String kHarnessAutorun = String.fromEnvironment('HARNESS_AUTORUN');
+
 void main() {
   runApp(const ScannerShowcaseApp());
 }
@@ -20,7 +30,17 @@ class ScannerShowcaseApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0A1C58)),
         useMaterial3: true,
       ),
-      home: const ScannerShowcaseScreen(),
+      home: switch (kHarnessAutorun) {
+        'cycles' => const MountCyclePage(
+          config: FlutterBarcodeScannerConfig(),
+          autoStart: true,
+        ),
+        'soak' => const StressHarnessPage(
+          config: FlutterBarcodeScannerConfig(),
+          autoStart: true,
+        ),
+        _ => const ScannerShowcaseScreen(),
+      },
     );
   }
 }
@@ -61,7 +81,6 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
   bool _embeddedAutoRequestCameraPermission = true;
   bool _embeddedAutoStart = true;
   bool _embeddedAutoPauseOnScan = true;
-  bool _embeddedFreezePreviewWhenPaused = false;
   bool _embeddedShowPauseResumeButton = false;
   BarcodeCameraLens _initialCameraLens = BarcodeCameraLens.back;
   FlutterBarcodeScannerStatusBarIconBrightness _statusBarIconBrightness =
@@ -98,6 +117,16 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
       appBar: AppBar(
         title: const Text('Scanner SDK Showcase'),
         actions: [
+          IconButton(
+            onPressed: _openMountCycles,
+            icon: const Icon(Icons.repeat),
+            tooltip: 'Mount / unmount cycles',
+          ),
+          IconButton(
+            onPressed: _openStressHarness,
+            icon: const Icon(Icons.speed_outlined),
+            tooltip: 'Stress harness',
+          ),
           FilledButton.tonalIcon(
             onPressed: _isLaunchingScanner ? null : _startScannerFlow,
             icon: const Icon(Icons.qr_code_scanner),
@@ -217,19 +246,6 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
               onChanged: (value) {
                 setState(() {
                   _embeddedAutoPauseOnScan = value;
-                });
-              },
-            ),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              value: _embeddedFreezePreviewWhenPaused,
-              title: const Text('Freeze preview while paused'),
-              subtitle: const Text(
-                'Auto-pause freezes on the detected barcode frame.',
-              ),
-              onChanged: (value) {
-                setState(() {
-                  _embeddedFreezePreviewWhenPaused = value;
                 });
               },
             ),
@@ -849,10 +865,25 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
     );
   }
 
+  void _openMountCycles() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => MountCyclePage(config: _buildConfig()),
+      ),
+    );
+  }
+
+  void _openStressHarness() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => StressHarnessPage(config: _buildConfig()),
+      ),
+    );
+  }
+
   FlutterBarcodeScannerWidgetConfig _buildWidgetConfig() {
     return FlutterBarcodeScannerWidgetConfig(
       autoRequestCameraPermission: _embeddedAutoRequestCameraPermission,
-      freezePreviewWhenPaused: _embeddedFreezePreviewWhenPaused,
       showPauseResumeButton: _embeddedShowPauseResumeButton,
       pausedScanWindowBorderColor: _pausedBorderColors[_pausedBorderColorIndex],
     );

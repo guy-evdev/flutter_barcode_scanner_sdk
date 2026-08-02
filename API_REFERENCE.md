@@ -100,7 +100,7 @@ and negative corner radii become zero. The effective values are available from
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `autoRequestCameraPermission` | `bool` | `true` | Requests camera permission before creating the platform view. |
-| `freezePreviewWhenPaused` | `bool` | `false` | Keeps the last camera frame visible while detection is paused. |
+| `freezePreviewWhenPaused` | `bool` | `false` | **Deprecated, no-op on both platforms.** The preview stays live while detection is paused; use `pausedScanWindowBorderColor` to signal the paused state. Removed in 0.3.0. |
 | `showPauseResumeButton` | `bool` | `false` | Adds a default Flutter pause/resume overlay button. |
 | `scanWindowBorderColor` | `Color` | `Colors.white` | Scan-window border while detection runs. |
 | `pausedScanWindowBorderColor` | `Color` | `Color(0xFFE53935)` | Scan-window border while detection is paused. |

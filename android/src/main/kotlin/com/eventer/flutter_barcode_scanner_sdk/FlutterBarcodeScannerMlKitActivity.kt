@@ -21,6 +21,7 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCase
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
@@ -104,15 +105,36 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
     }
 
     override fun onPause() {
-        cameraProvider?.unbindAll()
+        releaseUseCases()
         super.onPause()
     }
 
     override fun onDestroy() {
-        cameraProvider?.unbindAll()
+        releaseUseCases()
         barcodeScanner.close()
         analysisExecutor.shutdown()
         super.onDestroy()
+    }
+
+    /**
+     * Unbinds only this activity's own use cases.
+     *
+     * `ProcessCameraProvider` is a process-wide singleton, so `unbindAll()` here also tore
+     * down any embedded `FlutterBarcodeScannerView` the app had running, leaving it with a
+     * permanently dead preview after the full-screen scanner closed.
+     */
+    private fun releaseUseCases() {
+        analysis?.clearAnalyzer()
+        cameraProvider?.let { provider ->
+            val useCases = listOfNotNull<UseCase>(preview, analysis)
+            if (useCases.isNotEmpty()) {
+                provider.unbind(*useCases.toTypedArray())
+            }
+        }
+        preview?.setSurfaceProvider(null)
+        preview = null
+        analysis = null
+        camera = null
     }
 
     private fun bindCamera() {
@@ -125,6 +147,8 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
                     val selector = CameraSelector.Builder()
                         .requireLensFacing(lensFacing)
                         .build()
+
+                    releaseUseCases()
 
                     preview = Preview.Builder().build().also { previewUseCase ->
                         previewUseCase.surfaceProvider = previewView.surfaceProvider
@@ -140,7 +164,6 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
                             }
                         }
 
-                    provider.unbindAll()
                     camera = provider.bindToLifecycle(this, selector, preview, analysis)
                     if (camera?.cameraInfo?.hasFlashUnit() != true) {
                         isFlashEnabled = false
@@ -522,7 +545,7 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             hashMapOf(
                 "type" to "error",
                 "rawValue" to "",
-                "format" to "UNKNOWN",
+                "format" to ScannerActivityContract.UNKNOWN_FORMAT,
                 "errorCode" to "CAMERA_UNAVAILABLE",
                 "errorMessage" to message,
             ),
