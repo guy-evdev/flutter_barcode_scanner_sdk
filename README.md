@@ -50,7 +50,7 @@ Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iO
 
 ```yaml
 dependencies:
-  flutter_barcode_scanner_sdk: ^0.2.0
+  flutter_barcode_scanner_sdk: ^0.2.1
 ```
 
 Then run:

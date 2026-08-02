@@ -1,7 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_barcode_scanner_sdk/flutter_barcode_scanner_sdk.dart';
 
+import 'mount_cycle_page.dart';
 import 'stress_harness_page.dart';
+
+/// Selects a harness to run unattended, set with
+/// `--dart-define=HARNESS_AUTORUN=cycles`.
+///
+/// Physical iPhones cannot be driven by injected taps the way an Android device
+/// can, so the harness has to start itself and report over the log.
+const String kHarnessAutorun = String.fromEnvironment('HARNESS_AUTORUN');
 
 void main() {
   runApp(const ScannerShowcaseApp());
@@ -22,7 +30,17 @@ class ScannerShowcaseApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF0A1C58)),
         useMaterial3: true,
       ),
-      home: const ScannerShowcaseScreen(),
+      home: switch (kHarnessAutorun) {
+        'cycles' => const MountCyclePage(
+          config: FlutterBarcodeScannerConfig(),
+          autoStart: true,
+        ),
+        'soak' => const StressHarnessPage(
+          config: FlutterBarcodeScannerConfig(),
+          autoStart: true,
+        ),
+        _ => const ScannerShowcaseScreen(),
+      },
     );
   }
 }
@@ -99,6 +117,11 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
       appBar: AppBar(
         title: const Text('Scanner SDK Showcase'),
         actions: [
+          IconButton(
+            onPressed: _openMountCycles,
+            icon: const Icon(Icons.repeat),
+            tooltip: 'Mount / unmount cycles',
+          ),
           IconButton(
             onPressed: _openStressHarness,
             icon: const Icon(Icons.speed_outlined),
@@ -839,6 +862,14 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
       appBarBackgroundColor: appBarColor,
       appBarForegroundColor: Colors.white,
       overlayColor: Colors.black.withValues(alpha: overlayOpacity),
+    );
+  }
+
+  void _openMountCycles() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (context) => MountCyclePage(config: _buildConfig()),
+      ),
     );
   }
 

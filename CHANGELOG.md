@@ -1,3 +1,28 @@
+## 0.2.1
+
+### August 2, 2026
+
+**Fixed:**
+
+* Full-screen scanning no longer stops a running embedded scanner on Android.
+* Android no longer leaks ML Kit detectors or camera buffers across mount/unmount cycles.
+* Cosmetic configuration changes no longer restart the Android camera.
+* A zero-size scanner parent reports `PREVIEW_UNAVAILABLE` instead of retrying forever.
+* iOS format filtering is honoured instead of falling back to all detectable types, and reports
+  `UNSUPPORTED_FORMATS` when none are supported.
+* iOS keeps UPC-A and EAN-13 distinct when only one is requested.
+* iOS recovers from capture-session interruptions and `mediaServicesWereReset`.
+* Cancelled and error results report `unknown` instead of `qrCode`.
+
+**Deprecated:**
+
+* `freezePreviewWhenPaused` is now a no-op and will be removed in 0.3.0. See
+  [MIGRATION.md](MIGRATION.md#021).
+
+**Compatibility:**
+
+* Migrated to AGP 9 built-in Kotlin; the plugin no longer pins Kotlin or AGP versions.
+
 ## 0.2.0
 
 ### July 14, 2026

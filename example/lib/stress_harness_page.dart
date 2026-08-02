@@ -16,10 +16,22 @@ import 'package:flutter_barcode_scanner_sdk/flutter_barcode_scanner_sdk.dart';
 /// Reports scans completed, peak and steady memory, dropped frames, the decode
 /// latency distribution, and the camera restart count.
 class StressHarnessPage extends StatefulWidget {
-  const StressHarnessPage({super.key, required this.config});
+  const StressHarnessPage({
+    super.key,
+    required this.config,
+    this.autoStart = false,
+  });
 
   /// Scanner configuration to soak, so the harness measures the real setup.
   final FlutterBarcodeScannerConfig config;
+
+  /// Starts the soak without waiting for a tap, and prints the report to the
+  /// console when it finishes.
+  ///
+  /// Set by `--dart-define=HARNESS_AUTORUN=soak`, which is how this runs on a
+  /// physical iPhone: taps cannot be injected there, so the run has to drive
+  /// itself and report over the log. A barcode still has to be held in frame.
+  final bool autoStart;
 
   @override
   State<StressHarnessPage> createState() => _StressHarnessPageState();
@@ -61,6 +73,16 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
     super.initState();
     _stateSubscription = _controller.state.listen(_onStateChanged);
     _errorSubscription = _controller.errors.listen(_onError);
+    if (widget.autoStart) {
+      // Give the camera a moment to reach running before the first resume, so
+      // the first latency sample is not dominated by session startup.
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        await Future<void>.delayed(const Duration(seconds: 3));
+        if (mounted) {
+          await _start();
+        }
+      });
+    }
   }
 
   @override
@@ -180,6 +202,13 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
       _isRunning = false;
       _finishedAt = DateTime.now();
     });
+    if (widget.autoStart) {
+      debugPrint('===HARNESS-REPORT-BEGIN===');
+      for (final line in _report.split('\n')) {
+        debugPrint(line);
+      }
+      debugPrint('===HARNESS-REPORT-END===');
+    }
   }
 
   Future<void> _resumeForNextScan() async {
