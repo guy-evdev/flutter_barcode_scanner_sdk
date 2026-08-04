@@ -256,6 +256,52 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
             name: AVCaptureSession.runtimeErrorNotification,
             object: session
         )
+        // Posted only while `isSubjectAreaChangeMonitoringEnabled` is set, which
+        // `ScannerFocus.configureForScanning` does once the input is attached.
+        center.addObserver(
+            self,
+            selector: #selector(subjectAreaDidChange(_:)),
+            name: AVCaptureDevice.subjectAreaDidChangeNotification,
+            object: nil
+        )
+    }
+
+    /// Configures continuous autofocus and exposure on the scan window's centre.
+    ///
+    /// The layout is read on the main queue and the device is configured back on the session
+    /// queue, so this is safe to call from either.
+    private func configureFocus(for device: AVCaptureDevice) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.hasCompleted else { return }
+            let devicePoint = self.previewLayer.captureDevicePointConverted(
+                fromLayerPoint: ScannerFocus.aimPoint(
+                    scanWindow: self.currentScanWindow,
+                    viewBounds: self.view.bounds
+                )
+            )
+            self.sessionQueue.async {
+                ScannerFocus.configureForScanning(device, aimingAt: devicePoint)
+            }
+        }
+    }
+
+    /// Re-runs autofocus when the subject changes but the scene does not — one barcode swapped
+    /// for another at the same distance, which is the dense-sheet case.
+    @objc private func subjectAreaDidChange(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.hasCompleted, let device = self.currentInput?.device else {
+                return
+            }
+            let devicePoint = self.previewLayer.captureDevicePointConverted(
+                fromLayerPoint: ScannerFocus.aimPoint(
+                    scanWindow: self.currentScanWindow,
+                    viewBounds: self.view.bounds
+                )
+            )
+            self.sessionQueue.async {
+                ScannerFocus.nudge(device, aimingAt: devicePoint)
+            }
+        }
     }
 
     /// Resumes the session once the system releases the camera.
@@ -476,6 +522,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                 self.session.addInput(input)
                 self.currentInput = input
                 self.currentCameraPosition = device.position
+                self.configureFocus(for: device)
 
                 guard self.session.canAddOutput(self.metadataOutput) else {
                     throw NSError(
@@ -556,6 +603,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
                 self.session.addInput(input)
                 self.currentInput = input
                 self.currentCameraPosition = requestedPosition
+                self.configureFocus(for: input.device)
                 self.session.commitConfiguration()
                 if wasRunning {
                     self.session.startRunning()
@@ -667,33 +715,45 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
             return
         }
 
-        for metadataObject in metadataObjects {
+        let candidates = scanCandidates(from: metadataObjects)
+        let frameCenter = CGPoint(x: view.bounds.midX, y: view.bounds.midY)
+        let selectedIndex = ScanCandidateSelector.selectNearest(
+            candidates: candidates.map { $0.bounds },
+            window: activeScanWindow,
+            frameCenter: frameCenter
+        )
+
+        guard let selectedIndex else { return }
+
+        let selected = candidates[selectedIndex]
+        finishWithPayload(ScannerPayload.barcode(value: selected.value, format: selected.format))
+    }
+
+    /// The frame's decoded barcodes that carry a value in a requested format, in view coordinates.
+    private func scanCandidates(from metadataObjects: [AVMetadataObject]) -> [ScanCandidate] {
+        metadataObjects.compactMap { metadataObject in
             guard
                 let code = metadataObject as? AVMetadataMachineReadableCodeObject,
                 let transformed = previewLayer.transformedMetadataObject(for: code)
                     as? AVMetadataMachineReadableCodeObject,
-                let stringValue = transformed.stringValue,
-                !stringValue.isEmpty,
-                !config.scanWindowEnabled || isCodeCenteredInScanWindow(transformed),
+                let value = transformed.stringValue,
+                !value.isEmpty,
                 let format = ScannerFormat.resolve(
                     for: transformed.type,
-                    value: stringValue,
+                    value: value,
                     allowedFormatNames: config.allowedFormatNames
                 )
             else {
-                continue
+                return nil
             }
-
-            finishWithPayload(ScannerPayload.barcode(value: stringValue, format: format))
-            break
+            return ScanCandidate(bounds: transformed.bounds, value: value, format: format)
         }
     }
 
-    private func isCodeCenteredInScanWindow(_ code: AVMetadataMachineReadableCodeObject) -> Bool {
-        if !config.scanWindowEnabled || currentScanWindow.isEmpty {
-            return true
-        }
-        return currentScanWindow.contains(CGPoint(x: code.bounds.midX, y: code.bounds.midY))
+    /// The scan window to select against, or nil when it is disabled or has no area.
+    private var activeScanWindow: CGRect? {
+        guard config.scanWindowEnabled, !currentScanWindow.isEmpty else { return nil }
+        return currentScanWindow
     }
 
     private func finishWithError(_ message: String, code: String = "CAMERA_UNAVAILABLE") {
@@ -975,7 +1035,49 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             return
         }
         isDetectionPaused = false
+        // The scene has not changed while detection was paused, so AVFoundation has no reason to
+        // re-run autofocus by itself; without this nudge the first code after a resume is scanned
+        // against a lens still focused on whatever was in frame when the pause began.
+        nudgeFocus()
         emitState("running")
+    }
+
+    /// Configures continuous autofocus and exposure on the scan window's centre.
+    ///
+    /// The layout is read on the main queue and the device is configured back on the session
+    /// queue, so this is safe to call from either.
+    private func configureFocus(for device: AVCaptureDevice) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isDisposed else { return }
+            let devicePoint = self.previewLayer.captureDevicePointConverted(
+                fromLayerPoint: ScannerFocus.aimPoint(
+                    scanWindow: self.currentScanWindow,
+                    viewBounds: self.bounds
+                )
+            )
+            self.sessionQueue.async {
+                ScannerFocus.configureForScanning(device, aimingAt: devicePoint)
+            }
+        }
+    }
+
+    /// Re-triggers focus and exposure on the scan window's centre.
+    private func nudgeFocus() {
+        guard let device = currentInput?.device else { return }
+        let layerPoint = ScannerFocus.aimPoint(scanWindow: currentScanWindow, viewBounds: bounds)
+        let devicePoint = previewLayer.captureDevicePointConverted(fromLayerPoint: layerPoint)
+        sessionQueue.async {
+            ScannerFocus.nudge(device, aimingAt: devicePoint)
+        }
+    }
+
+    /// Re-runs autofocus when the subject changes but the scene does not — one barcode swapped
+    /// for another at the same distance, which is the dense-sheet case.
+    @objc private func subjectAreaDidChange(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isDisposed, self.isRunning else { return }
+            self.nudgeFocus()
+        }
     }
 
     func toggleFlash(enabled: Bool?) -> Bool {
@@ -1044,6 +1146,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
                 self.session.addInput(input)
                 self.currentInput = input
                 self.currentCameraPosition = requestedPosition
+                self.configureFocus(for: input.device)
                 self.session.commitConfiguration()
                 DispatchQueue.main.async {
                     self.isTorchEnabled = false
@@ -1182,6 +1285,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
                     self.session.addInput(input)
                     self.currentInput = input
                     self.currentCameraPosition = device.position
+                    self.configureFocus(for: device)
                 } catch {
                     self.session.commitConfiguration()
                     DispatchQueue.main.async {
@@ -1257,6 +1361,14 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
             selector: #selector(sessionRuntimeError(_:)),
             name: AVCaptureSession.runtimeErrorNotification,
             object: session
+        )
+        // Posted only while `isSubjectAreaChangeMonitoringEnabled` is set, which
+        // `ScannerFocus.configureForScanning` does once the input is attached.
+        center.addObserver(
+            self,
+            selector: #selector(subjectAreaDidChange(_:)),
+            name: AVCaptureDevice.subjectAreaDidChangeNotification,
+            object: nil
         )
     }
 
@@ -1410,39 +1522,53 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     ) {
         guard !isDisposed, isRunning, !isDetectionPaused else { return }
 
-        for metadataObject in metadataObjects {
+        let candidates = scanCandidates(from: metadataObjects)
+
+        guard
+            let index = ScanCandidateSelector.selectNearest(
+                candidates: candidates.map { $0.bounds },
+                window: activeScanWindow,
+                frameCenter: CGPoint(x: bounds.midX, y: bounds.midY)
+            )
+        else {
+            return
+        }
+
+        let selected = candidates[index]
+        if autoPauseOnScan {
+            isDetectionPaused = true
+        }
+        emitResult(value: selected.value, format: selected.format)
+        if autoPauseOnScan {
+            emitState("detectionPaused")
+        }
+    }
+
+    /// The frame's decoded barcodes that carry a value in a requested format, in view coordinates.
+    private func scanCandidates(from metadataObjects: [AVMetadataObject]) -> [ScanCandidate] {
+        metadataObjects.compactMap { metadataObject in
             guard
                 let code = metadataObject as? AVMetadataMachineReadableCodeObject,
                 let transformed = previewLayer.transformedMetadataObject(for: code)
                     as? AVMetadataMachineReadableCodeObject,
-                let stringValue = transformed.stringValue,
-                !stringValue.isEmpty,
-                !config.scanWindowEnabled || isCodeCenteredInScanWindow(transformed),
+                let value = transformed.stringValue,
+                !value.isEmpty,
                 let format = ScannerFormat.resolve(
                     for: transformed.type,
-                    value: stringValue,
+                    value: value,
                     allowedFormatNames: config.allowedFormatNames
                 )
             else {
-                continue
+                return nil
             }
-
-            if autoPauseOnScan {
-                isDetectionPaused = true
-            }
-            emitResult(value: stringValue, format: format)
-            if autoPauseOnScan {
-                emitState("detectionPaused")
-            }
-            break
+            return ScanCandidate(bounds: transformed.bounds, value: value, format: format)
         }
     }
 
-    private func isCodeCenteredInScanWindow(_ code: AVMetadataMachineReadableCodeObject) -> Bool {
-        if !config.scanWindowEnabled || currentScanWindow.isEmpty {
-            return true
-        }
-        return currentScanWindow.contains(CGPoint(x: code.bounds.midX, y: code.bounds.midY))
+    /// The scan window to select against, or nil when it is disabled or has no area.
+    private var activeScanWindow: CGRect? {
+        guard config.scanWindowEnabled, !currentScanWindow.isEmpty else { return nil }
+        return currentScanWindow
     }
 
     private func setTorch(enabled: Bool) {

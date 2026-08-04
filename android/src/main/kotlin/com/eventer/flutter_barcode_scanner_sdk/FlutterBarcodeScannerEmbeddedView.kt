@@ -497,16 +497,27 @@ class FlutterBarcodeScannerEmbeddedView(
                     if (isDisposed || isDetectionPaused) {
                         return@addOnSuccessListener
                     }
-                    val matchedBarcode = barcodes.firstOrNull { barcode ->
-                        barcode.rawValue?.isNotBlank() == true &&
-                            (!config.scanWindowEnabled ||
-                                (coordinateTransform != null && isBarcodeInsideOverlay(barcode, overlayRect, coordinateTransform)))
+                    val candidates = barcodes.filter { it.rawValue?.isNotBlank() == true }
+                    val candidateBounds = candidates.map { barcode ->
+                        barcode.boundingBox?.let { box ->
+                            RectF(box)
+                                .also { rect -> coordinateTransform?.mapRect(rect) }
+                                .takeIf { coordinateTransform != null }
+                                ?.toCandidateBounds()
+                        }
                     }
-                    if (matchedBarcode != null) {
+                    val selectedIndex = ScanCandidateSelector.selectNearest(
+                        candidates = candidateBounds,
+                        window = if (config.scanWindowEnabled) overlayRect.toScanWindowBounds() else null,
+                        frameCenterX = previewView.width / 2f,
+                        frameCenterY = previewView.height / 2f,
+                    )
+
+                    if (selectedIndex != null) {
                         if (autoPauseOnScan) {
                             isDetectionPaused = true
                         }
-                        emitResult(matchedBarcode)
+                        emitResult(candidates[selectedIndex])
                         if (autoPauseOnScan) {
                             emitState("detectionPaused")
                         }
@@ -523,20 +534,6 @@ class FlutterBarcodeScannerEmbeddedView(
                 imageProxy.close()
             }
         }
-    }
-
-    private fun isBarcodeInsideOverlay(
-        barcode: Barcode,
-        overlayRect: RectF,
-        coordinateTransform: CoordinateTransform,
-    ): Boolean {
-        if (overlayRect.isEmpty) {
-            return false
-        }
-        val boundingBox = barcode.boundingBox ?: return false
-        val mappedRect = RectF(boundingBox)
-        coordinateTransform.mapRect(mappedRect)
-        return overlayRect.contains(mappedRect.centerX(), mappedRect.centerY())
     }
 
     private fun barcodeAnalysisResolutionSelector(): ResolutionSelector {

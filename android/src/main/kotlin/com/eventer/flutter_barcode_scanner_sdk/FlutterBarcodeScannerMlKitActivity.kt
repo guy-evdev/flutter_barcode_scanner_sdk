@@ -218,26 +218,29 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
                 if (hasReturnedResult) {
                     return@addOnSuccessListener
                 }
-                val matchedBarcode =
-                    if (!config.scanWindowEnabled) {
-                        barcodes.firstOrNull { barcode ->
-                            barcode.rawValue?.isNotBlank() == true
-                        }
-                    } else {
-                        barcodes.firstOrNull { barcode ->
-                            barcode.rawValue?.isNotBlank() == true &&
-                                barcode.boundingBox != null &&
-                                coordinateTransform != null &&
-                                isBarcodeInsideOverlay(barcode, overlayRect, coordinateTransform)
-                        }
+                val candidates = barcodes.filter { it.rawValue?.isNotBlank() == true }
+                val candidateBounds = candidates.map { barcode ->
+                    barcode.boundingBox?.let { box ->
+                        RectF(box)
+                            .also { rect -> coordinateTransform?.mapRect(rect) }
+                            .takeIf { coordinateTransform != null }
+                            ?.toCandidateBounds()
                     }
+                }
+                val selectedIndex = ScanCandidateSelector.selectNearest(
+                    candidates = candidateBounds,
+                    window = if (config.scanWindowEnabled) overlayRect.toScanWindowBounds() else null,
+                    frameCenterX = previewView.width / 2f,
+                    frameCenterY = previewView.height / 2f,
+                )
 
-                if (matchedBarcode != null) {
+                if (selectedIndex != null) {
+                    val matched = candidates[selectedIndex]
                     finishWithPayload(
                         hashMapOf(
                             "type" to "barcode",
-                            "rawValue" to matchedBarcode.rawValue,
-                            "format" to mapMlKitFormat(matchedBarcode.format),
+                            "rawValue" to matched.rawValue,
+                            "format" to mapMlKitFormat(matched.format),
                             "errorCode" to null,
                             "errorMessage" to null,
                         ),
@@ -248,20 +251,6 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
                 isAnalyzerBusy.set(false)
                 imageProxy.close()
             }
-    }
-
-    private fun isBarcodeInsideOverlay(
-        barcode: Barcode,
-        overlayRect: RectF,
-        coordinateTransform: CoordinateTransform?,
-    ): Boolean {
-        if (coordinateTransform == null || overlayRect.isEmpty) {
-            return false
-        }
-        val boundingBox = barcode.boundingBox ?: return false
-        val mappedRect = RectF(boundingBox)
-        coordinateTransform.mapRect(mappedRect)
-        return overlayRect.contains(mappedRect.centerX(), mappedRect.centerY())
     }
 
     private fun barcodeAnalysisResolutionSelector(): ResolutionSelector {

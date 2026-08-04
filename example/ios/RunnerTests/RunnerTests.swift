@@ -220,4 +220,138 @@ class RunnerTests: XCTestCase {
         XCTAssertEqual(budget.attempts, 0)
         XCTAssertTrue(budget.tryAgain())
     }
+
+    // MARK: - B21, B22, scan-result selection
+
+    /// A 400x400 window centred in an 800x800 preview.
+    private var scanWindow: CGRect { CGRect(x: 200, y: 200, width: 400, height: 400) }
+    private var frameCenter: CGPoint { CGPoint(x: 400, y: 400) }
+
+    private func select(_ candidates: [CGRect?], window: CGRect?) -> Int? {
+        ScanCandidateSelector.selectNearest(
+            candidates: candidates,
+            window: window,
+            frameCenter: frameCenter
+        )
+    }
+
+    private func select(_ candidates: [CGRect?]) -> Int? {
+        select(candidates, window: scanWindow)
+    }
+
+    // B21 — AVFoundation's ordering must not decide the result.
+
+    func testNearestToTheWindowCentreWinsOverAnEarlierCandidate() {
+        let neighbour = CGRect(x: 210, y: 210, width: 80, height: 40)
+        let aimedAt = CGRect(x: 370, y: 380, width: 60, height: 40)
+
+        XCTAssertEqual(select([neighbour, aimedAt]), 1)
+    }
+
+    func testNearestWinsRegardlessOfWhichEndOfTheListItIsOn() {
+        let aimedAt = CGRect(x: 370, y: 380, width: 60, height: 40)
+        let neighbour = CGRect(x: 210, y: 210, width: 80, height: 40)
+
+        XCTAssertEqual(select([aimedAt, neighbour]), 0)
+    }
+
+    func testTheNearestOfSeveralCandidatesWins() {
+        let candidates: [CGRect?] = [
+            CGRect(x: 205, y: 205, width: 60, height: 30),
+            CGRect(x: 520, y: 520, width: 60, height: 30),
+            CGRect(x: 390, y: 405, width: 60, height: 30),
+            CGRect(x: 240, y: 500, width: 60, height: 30),
+        ]
+
+        XCTAssertEqual(select(candidates), 2)
+    }
+
+    func testEquallyDistantCandidatesResolveToTheEarliestSoSelectionIsStable() {
+        let left = CGRect(x: 300, y: 390, width: 40, height: 20)
+        let right = CGRect(x: 460, y: 390, width: 40, height: 20)
+
+        XCTAssertEqual(select([left, right]), 0)
+        XCTAssertEqual(select([right, left]), 0)
+    }
+
+    // B22 — overlapping the window is enough; the centre point need not be inside it.
+
+    func testACodeOverlappingTheWindowQualifiesEvenWhenItsCentreIsOutside() {
+        // A long 1D code crossing the window's left edge: the centre sits well outside.
+        let overlapping = CGRect(x: 20, y: 390, width: 240, height: 30)
+
+        XCTAssertFalse(scanWindow.contains(CGPoint(x: overlapping.midX, y: overlapping.midY)))
+        XCTAssertEqual(select([overlapping]), 0)
+    }
+
+    func testACodeEntirelyOutsideTheWindowNeverQualifies() {
+        let outside = CGRect(x: 20, y: 20, width: 160, height: 40)
+
+        XCTAssertNil(select([outside]))
+    }
+
+    func testTouchingTheWindowEdgeIsNotOverlapping() {
+        let touching = CGRect(x: 100, y: 390, width: 100, height: 20)
+
+        XCTAssertNil(select([touching]))
+    }
+
+    func testAnOverlappingCandidateLosesToOneCentredNearerTheWindow() {
+        let overlapping = CGRect(x: 20, y: 390, width: 240, height: 30)
+        let centred = CGRect(x: 380, y: 390, width: 60, height: 30)
+
+        XCTAssertEqual(select([overlapping, centred]), 1)
+    }
+
+    // Unpositioned candidates.
+
+    func testACandidateWithoutBoundsNeverQualifiesWhileTheWindowApplies() {
+        XCTAssertNil(select([nil]))
+    }
+
+    func testZeroAreaBoundsAreTreatedAsUnpositioned() {
+        XCTAssertNil(select([CGRect(x: 400, y: 400, width: 0, height: 0)]))
+    }
+
+    func testAPositionedCandidateBeatsAnUnpositionedOneWithNoWindow() {
+        let positioned = CGRect(x: 700, y: 700, width: 60, height: 30)
+
+        XCTAssertEqual(select([nil, positioned], window: nil), 1)
+    }
+
+    func testAnUnpositionedCandidateIsStillReportedWhenNothingElseQualifies() {
+        XCTAssertEqual(select([nil], window: nil), 0)
+    }
+
+    // No scan window — ranking falls back to the centre of the preview.
+
+    func testWithoutAWindowTheCandidateNearestThePreviewCentreWins() {
+        let edge = CGRect(x: 20, y: 20, width: 60, height: 30)
+        let middle = CGRect(x: 370, y: 380, width: 60, height: 40)
+
+        XCTAssertEqual(select([edge, middle], window: nil), 1)
+    }
+
+    func testWithoutAWindowNothingIsRejectedForBeingFarAway() {
+        let faraway = CGRect(x: 760, y: 760, width: 40, height: 30)
+
+        XCTAssertEqual(select([faraway], window: nil), 0)
+    }
+
+    // Degenerate input.
+
+    func testNoCandidatesSelectsNothing() {
+        XCTAssertNil(select([]))
+        XCTAssertNil(select([], window: nil))
+    }
+
+    func testEveryCandidateOutsideTheWindowSelectsNothing() {
+        let candidates: [CGRect?] = [
+            CGRect(x: 20, y: 20, width: 80, height: 40),
+            CGRect(x: 650, y: 650, width: 130, height: 50),
+            nil,
+        ]
+
+        XCTAssertNil(select(candidates))
+    }
 }

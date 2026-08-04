@@ -1,0 +1,92 @@
+# flutter-package template rev 1 — release lane.
+# Everything too slow, too expensive, or too release-specific for every push. macOS runners bill
+# at roughly 10x ubuntu, so both iOS lanes live here. See CLAUDE.md §4 and §6.
+#
+# Every check here must be able to fail. A step whose failure is ignored is decoration, not a gate.
+
+name: Release gates
+
+on:
+  push:
+    branches: ['release/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs-and-score:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+
+      - name: Dartdoc
+        run: dart doc --dry-run
+
+      # --exit-code-threshold is what makes this a gate. Without it pana exits 0 at any score.
+      # Measured 160/160 with pana 0.23.15 on 2026-08-02, so the threshold is the maximum: any
+      # regression fails. Never lower it (CLAUDE.md §4).
+      - name: Pana
+        run: |
+          dart pub global activate pana
+          dart pub global run pana:pana --no-warning --exit-code-threshold 160
+
+  ios:
+    name: iOS SwiftPM
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+
+      - name: Build example iOS simulator app
+        working-directory: example
+        run: flutter build ios --simulator --debug
+
+      - name: Run iOS native tests
+        working-directory: example/ios
+        run: >-
+          xcodebuild test
+          -workspace Runner.xcworkspace
+          -scheme Runner
+          -destination 'platform=iOS Simulator,OS=latest,name=iPhone 17 Pro'
+
+  # COMPATIBILITY.md claims both dependency managers work. That claim needs a lane behind it —
+  # but it changes rarely, so it does not belong on every push.
+  ios-cocoapods:
+    name: iOS CocoaPods compatibility
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Disable Swift Package Manager for this compatibility build
+        run: flutter config --no-enable-swift-package-manager
+
+      - run: flutter pub get
+
+      - name: Build example iOS simulator app with CocoaPods
+        working-directory: example
+        run: flutter build ios --simulator --debug

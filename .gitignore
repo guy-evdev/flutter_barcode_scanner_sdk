@@ -48,10 +48,12 @@ pubspec.lock
 .DS_Store
 *.log
 *.swp
-NEW_FEATURES_ROADMAP.md
-ALTERNATIVE_ROADMAP.md
-RELEASE_WORKFLOW.md
+
+# Local maintainer files (flutter-package template)
 CLAUDE.md
+RELEASE_WORKFLOW.md
+ROADMAP.md
+ROADMAP_HISTORY.md
 
 # FVM Version Cache
 .fvm/

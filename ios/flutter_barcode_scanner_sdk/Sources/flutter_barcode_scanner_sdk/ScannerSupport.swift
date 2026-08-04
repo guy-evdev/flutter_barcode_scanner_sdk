@@ -302,22 +302,180 @@ struct RestartBudget {
     }
 }
 
+/// A decoded barcode that passed the value and format gates, awaiting selection.
+struct ScanCandidate {
+    /// Bounds after `transformedMetadataObject(for:)`, in view coordinates.
+    let bounds: CGRect
+    let value: String
+    let format: String
+}
+
+/// Chooses which of a frame's decoded barcodes the scanner reports.
+///
+/// AVFoundation returns metadata objects in an order that has no relation to what the user is
+/// aiming at. Accepting the first object that passed the scan-window test therefore let a
+/// neighbouring code on a dense sheet win silently, and the app validated the wrong ticket.
+/// Candidates are ranked by distance from the scan-window centre instead, and the nearest wins.
+///
+/// A candidate qualifies when its bounds *overlap* the scan window. Requiring the bounds' centre
+/// point to be inside the window rejected codes that visibly sat within the overlay, which is why
+/// repositioning the camera eventually worked — the user was hunting for the centre to land.
+///
+/// Geometry only: values, formats and session state are the caller's to filter first.
+enum ScanCandidateSelector {
+    /// The index of the candidate to report, or nil when none qualifies.
+    ///
+    /// - Parameters:
+    ///   - candidates: transformed bounds per decoded candidate, in view coordinates, in the
+    ///     order AVFoundation supplied them. A nil entry is a candidate whose bounds could not be
+    ///     resolved: it never qualifies while `window` applies, and ranks behind every positioned
+    ///     candidate when it does not.
+    ///   - window: the scan window in view coordinates, or nil when the scan window is disabled or
+    ///     has no area. When nil every candidate qualifies and ranking falls back to `frameCenter`
+    ///     — nearest to the middle of the preview, which is still a better answer than whichever
+    ///     object AVFoundation happened to list first.
+    ///   - frameCenter: centre of the preview, used only when `window` is nil.
+    static func selectNearest(
+        candidates: [CGRect?],
+        window: CGRect?,
+        frameCenter: CGPoint
+    ) -> Int? {
+        let anchor = window.map { CGPoint(x: $0.midX, y: $0.midY) } ?? frameCenter
+        var bestIndex: Int?
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+
+        for (index, bounds) in candidates.enumerated() {
+            guard let bounds, !bounds.isEmpty else {
+                // Unpositioned: only usable when there is no window to test it against, and only
+                // while nothing positioned has qualified.
+                if window == nil, bestIndex == nil {
+                    bestIndex = index
+                }
+                continue
+            }
+            if let window, !window.intersects(bounds) {
+                continue
+            }
+            let dx = bounds.midX - anchor.x
+            let dy = bounds.midY - anchor.y
+            let distance = (dx * dx + dy * dy).squareRoot()
+            // Strictly nearer, so the earliest candidate wins a tie and selection stays stable
+            // across frames.
+            if bestIndex == nil || distance < bestDistance {
+                bestIndex = index
+                bestDistance = distance
+            }
+        }
+        return bestIndex
+    }
+}
+
+/// Focus and exposure configuration for barcode scanning.
+///
+/// The plugin previously locked the capture device only to toggle the torch: it set no
+/// `focusMode`, `exposureMode`, `autoFocusRangeRestriction` or subject-area monitoring at all.
+/// AVFoundation therefore never re-ran autofocus when the *subject* changed but the scene did
+/// not — swapping one barcode for another at the same distance — which is why pulling the camera
+/// away and back was what made the next code register. CameraX gives Android continuous AF/AE
+/// with metering regions by default, so this asymmetry was entirely iOS's missing configuration.
+///
+/// iOS only. Nothing here has an Android counterpart to keep in step.
+enum ScannerFocus {
+    /// Configures continuous autofocus and auto-exposure biased towards close subjects.
+    ///
+    /// - Parameters:
+    ///   - device: the active capture device.
+    ///   - point: the aim point in *capture device* coordinates (0…1, origin top-left), normally
+    ///     the scan window's centre converted with
+    ///     `AVCaptureVideoPreviewLayer.captureDevicePointConverted(fromLayerPoint:)`.
+    static func configureForScanning(_ device: AVCaptureDevice, aimingAt point: CGPoint) {
+        apply(to: device) {
+            if device.isFocusPointOfInterestSupported {
+                device.focusPointOfInterest = point
+            }
+            if device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusMode = .continuousAutoFocus
+            }
+            // Barcodes are held close; restricting the sweep to the near half of the range stops
+            // autofocus hunting out to infinity between codes.
+            if device.isAutoFocusRangeRestrictionSupported {
+                device.autoFocusRangeRestriction = .near
+            }
+            if device.isExposurePointOfInterestSupported {
+                device.exposurePointOfInterest = point
+            }
+            if device.isExposureModeSupported(.continuousAutoExposure) {
+                device.exposureMode = .continuousAutoExposure
+            }
+            // The notification this enables is what lets a swapped subject re-trigger focus.
+            device.isSubjectAreaChangeMonitoringEnabled = true
+        }
+    }
+
+    /// Re-triggers focus and exposure at `point` without disturbing the rest of the configuration.
+    ///
+    /// Reassigning the point of interest is what restarts a continuous scan; leaving the mode
+    /// alone would let AVFoundation sit on a converged lens position indefinitely.
+    static func nudge(_ device: AVCaptureDevice, aimingAt point: CGPoint) {
+        apply(to: device) {
+            if device.isFocusPointOfInterestSupported, device.isFocusModeSupported(.continuousAutoFocus) {
+                device.focusPointOfInterest = point
+                device.focusMode = .continuousAutoFocus
+            }
+            if device.isExposurePointOfInterestSupported,
+               device.isExposureModeSupported(.continuousAutoExposure)
+            {
+                device.exposurePointOfInterest = point
+                device.exposureMode = .continuousAutoExposure
+            }
+            device.isSubjectAreaChangeMonitoringEnabled = true
+        }
+    }
+
+    /// The aim point to focus on: the scan window's centre, or the preview's when there is none.
+    ///
+    /// Returned in layer coordinates; the caller converts to device coordinates through its
+    /// preview layer.
+    static func aimPoint(scanWindow: CGRect, viewBounds: CGRect) -> CGPoint {
+        if scanWindow.isEmpty {
+            return CGPoint(x: viewBounds.midX, y: viewBounds.midY)
+        }
+        return CGPoint(x: scanWindow.midX, y: scanWindow.midY)
+    }
+
+    private static func apply(to device: AVCaptureDevice, _ changes: () -> Void) {
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            changes()
+        } catch {
+            // A device that cannot be locked keeps whatever configuration it already had; the
+            // scanner still runs, it just focuses the way it did before.
+            return
+        }
+    }
+}
+
 enum ScannerCamera {
     static func device(
         for position: AVCaptureDevice.Position,
         allowFallback: Bool = true
     ) -> AVCaptureDevice? {
+        let discoverySession = AVCaptureDevice.DiscoverySession(
+            deviceTypes: supportedDeviceTypes,
+            mediaType: .video,
+            position: position
+        )
+        if let closeRangeDevice = bestCloseRangeDevice(among: discoverySession.devices) {
+            return closeRangeDevice
+        }
+
         if let defaultVideoDevice = AVCaptureDevice.default(for: .video),
            position == .unspecified || defaultVideoDevice.position == position
         {
             return defaultVideoDevice
         }
 
-        let discoverySession = AVCaptureDevice.DiscoverySession(
-            deviceTypes: supportedDeviceTypes,
-            mediaType: .video,
-            position: position
-        )
         if let matchingDevice = discoverySession.devices.first {
             return matchingDevice
         }
@@ -329,6 +487,59 @@ enum ScannerCamera {
             position: .unspecified
         ).devices.first
     }
+
+    /// The device best able to focus on a barcode held close to the lens.
+    ///
+    /// `AVCaptureDevice.default(for: .video)` returns the wide camera, whose minimum focus
+    /// distance on recent iPhones makes a small code held close fail to focus at all.
+    static func bestCloseRangeDevice(among devices: [AVCaptureDevice]) -> AVCaptureDevice? {
+        let ranked = devices.map {
+            CloseRangeRank(deviceType: $0.deviceType, minimumFocusDistance: $0.minimumFocusDistance)
+        }
+        guard let index = preferredCloseRangeIndex(among: ranked) else { return nil }
+        return devices[index]
+    }
+
+    /// The comparable properties of a capture device for close-range ranking.
+    struct CloseRangeRank {
+        let deviceType: AVCaptureDevice.DeviceType
+        /// Millimetres, or -1 when the device does not report one.
+        let minimumFocusDistance: Int
+    }
+
+    /// Index of the device to prefer for close-range scanning, or nil when the list is empty.
+    ///
+    /// A virtual device that contains an ultra-wide constituent wins first: the system switches
+    /// to the ultra-wide by itself once the subject comes nearer than the wide lens can focus,
+    /// which keeps the wide lens's detail at normal distances and still focuses up close.
+    /// Otherwise the smallest reported minimum focus distance wins. Devices that report no
+    /// distance rank last, since preferring an unknown over a measured one is a guess.
+    static func preferredCloseRangeIndex(among devices: [CloseRangeRank]) -> Int? {
+        if let virtualIndex = devices.firstIndex(where: {
+            closeRangeVirtualDeviceTypes.contains($0.deviceType)
+        }) {
+            return virtualIndex
+        }
+
+        var bestIndex: Int?
+        var bestDistance = Int.max
+        for (index, device) in devices.enumerated() where device.minimumFocusDistance > 0 {
+            if device.minimumFocusDistance < bestDistance {
+                bestIndex = index
+                bestDistance = device.minimumFocusDistance
+            }
+        }
+        if let bestIndex {
+            return bestIndex
+        }
+        return devices.isEmpty ? nil : 0
+    }
+
+    /// Virtual devices whose constituents include the ultra-wide camera.
+    private static let closeRangeVirtualDeviceTypes: Set<AVCaptureDevice.DeviceType> = [
+        .builtInTripleCamera,
+        .builtInDualWideCamera,
+    ]
 
     static var hasFrontAndBackCameras: Bool {
         device(for: .front, allowFallback: false) != nil
