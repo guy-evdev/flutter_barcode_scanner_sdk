@@ -16,9 +16,51 @@ the two common flows; everything here is the long tail.
 
 ## Continuous entry scanning
 
-Scanning a queue of tickets is a loop: detect, validate against your backend, resume. With
-`autoPauseOnScan: true` (the default) the native scanner pauses itself the moment it decodes,
-so the loop never double-scans while you are awaiting a server round trip.
+Scanning a queue of codes is a loop: detect, validate against your backend, resume.
+`onScanValidate` runs that loop for you — return a decision and the scanner handles the
+pausing, the feedback and the resume:
+
+```dart
+FlutterBarcodeScannerView(
+  config: const FlutterBarcodeScannerConfig(
+    allowedFormats: FlutterBarcodeScannerFormats.common,
+  ),
+  widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+    validationFeedbackDuration: Duration(milliseconds: 900),
+  ),
+  onScanValidate: (result) async {
+    final check = await api.validate(result.rawValue);
+    return check.isValid
+        ? const ScanDecision.accept(message: 'Admitted')
+        : const ScanDecision.reject(message: 'Already used');
+  },
+);
+```
+
+What it guarantees, which is the reason to prefer it over hand-rolling:
+
+- **Detection is held for the whole decision**, whatever `autoPauseOnScan` is set to. A slow
+  backend cannot produce a second read of the same code.
+- **Results arriving mid-decision, or while feedback is showing, are not validated again.**
+  They still reach `onScan`.
+- **A validator that throws is treated as a rejection** and reported through `FlutterError`,
+  so a failing backend leaves the scanner usable instead of stuck.
+- **A decision that resolves after the widget is gone is discarded**, rather than calling back
+  into a disposed controller.
+
+Do not call `resumeDetection()` yourself while using `onScanValidate` — the loop owns it.
+Set `validationFeedbackDuration` to `Duration.zero` to resume the instant the decision arrives,
+showing no feedback at all.
+
+To render your own accepted/rejected treatment, supply an `overlayBuilder` and read
+`controller.feedbackListenable`; the built-in banner is skipped whenever a custom overlay is
+supplied.
+
+### Doing it by hand
+
+Without `onScanValidate`, you own the pause/resume cycle. With `autoPauseOnScan: true` (the
+default) the native scanner pauses itself the moment it decodes, so the loop never double-scans
+while you are awaiting a server round trip.
 
 ```dart
 final controller = FlutterBarcodeScannerController();
@@ -33,7 +75,7 @@ FlutterBarcodeScannerView(
     if (!result.isBarcode) {
       return;
     }
-    final accepted = await validateTicket(result.rawValue);
+    final accepted = await validateCode(result.rawValue);
     showBanner(accepted ? 'Admitted' : 'Rejected');
     await controller.resumeDetection();
   },
@@ -139,7 +181,7 @@ button that `showPauseResumeButton` adds. Drive `controller.pauseDetection()` an
 One rule is easy to trip over: **when the two factors are equal, the window is forced square at
 `min(width, height)`**, on both platforms and in the Flutter overlay. So the `0.58 / 0.58`
 default is a square at 58% of the *preview height* on a portrait phone, not a rectangle 58%
-wide. For a long Code 128 ticket, ask for an explicitly non-square window:
+wide. For a long Code 128 label, ask for an explicitly non-square window:
 
 ```dart
 const FlutterBarcodeScannerScanWindow(

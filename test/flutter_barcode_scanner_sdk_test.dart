@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -9,7 +11,7 @@ void main() {
 
   test('config exposes expected platform map', () {
     final config = FlutterBarcodeScannerConfig(
-      strings: FlutterBarcodeScannerStrings(title: 'Ticket Scanner'),
+      strings: FlutterBarcodeScannerStrings(title: 'Barcode Scanner'),
       scanWindow: FlutterBarcodeScannerScanWindow(
         enabled: false,
         widthFactor: 0.7,
@@ -31,7 +33,7 @@ void main() {
     expect(map['textDirection'], 'rtl');
     expect(map['appBarTransparent'], isTrue);
     expect(map['allowedFormats'], isEmpty);
-    expect((map['strings'] as Map)['title'], 'Ticket Scanner');
+    expect((map['strings'] as Map)['title'], 'Barcode Scanner');
     expect((map['scanWindow'] as Map)['enabled'], isFalse);
     expect((map['scanWindow'] as Map)['widthFactor'], 0.7);
     expect((map['uiConfig'] as Map)['initialCameraLens'], 'front');
@@ -664,6 +666,260 @@ void main() {
       expect(controller.currentState, FlutterBarcodeScannerViewState.error);
 
       await controller.dispose();
+    });
+  });
+
+  group('validate loop', () {
+    late List<MethodCall> calls;
+    late MethodChannel channel;
+
+    setUp(() {
+      calls = <MethodCall>[];
+      channel = const MethodChannel(
+        'flutter_barcode_scanner_sdk/scanner_view/71',
+      );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            calls.add(call);
+            return null;
+          });
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    Future<void> emitBarcode(String rawValue) async {
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            channel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              MethodCall('onResult', <String, Object?>{
+                'type': 'barcode',
+                'rawValue': rawValue,
+                'format': 'CODE_128',
+              }),
+            ),
+            (_) {},
+          );
+    }
+
+    Future<FlutterBarcodeScannerController> pumpScanner(
+      WidgetTester tester, {
+      required Future<ScanDecision> Function(FlutterBarcodeScanResult) validate,
+      Duration feedback = const Duration(milliseconds: 100),
+      bool autoPauseOnScan = true,
+      void Function(FlutterBarcodeScanResult)? onScan,
+    }) async {
+      final controller = FlutterBarcodeScannerController()..attach(71);
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FlutterBarcodeScannerView(
+            controller: controller,
+            config: FlutterBarcodeScannerConfig(),
+            widgetConfig: FlutterBarcodeScannerWidgetConfig(
+              autoRequestCameraPermission: false,
+              validationFeedbackDuration: feedback,
+            ),
+            autoPauseOnScan: autoPauseOnScan,
+            onScan: onScan,
+            onScanValidate: validate,
+          ),
+        ),
+      );
+      return controller;
+    }
+
+    testWidgets('accepted scan shows feedback then resumes', (tester) async {
+      final controller = await pumpScanner(
+        tester,
+        validate: (_) async => const ScanDecision.accept(message: 'Admitted'),
+      );
+
+      await emitBarcode('CODE-1');
+      await tester.pump();
+
+      expect(controller.currentFeedback?.decision.isAccepted, isTrue);
+      expect(controller.currentFeedback?.decision.message, 'Admitted');
+      expect(find.text('Admitted'), findsOneWidget);
+      expect(
+        calls.map((call) => call.method),
+        isNot(contains('resumeDetection')),
+      );
+
+      await tester.pump(const Duration(milliseconds: 150));
+
+      expect(controller.currentFeedback, isNull);
+      expect(calls.map((call) => call.method), contains('resumeDetection'));
+    });
+
+    testWidgets('rejected scan reports the rejection', (tester) async {
+      final controller = await pumpScanner(
+        tester,
+        validate: (_) async =>
+            const ScanDecision.reject(message: 'Already used'),
+      );
+
+      await emitBarcode('CODE-2');
+      await tester.pump();
+
+      expect(controller.currentFeedback?.decision.isRejected, isTrue);
+      expect(find.text('Already used'), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 150));
+      expect(controller.currentFeedback, isNull);
+    });
+
+    testWidgets('a second scan during a slow decision is not validated twice', (
+      tester,
+    ) async {
+      var validations = 0;
+      final gate = Completer<ScanDecision>();
+      await pumpScanner(
+        tester,
+        validate: (_) {
+          validations += 1;
+          return gate.future;
+        },
+      );
+
+      await emitBarcode('CODE-3');
+      await tester.pump();
+      await emitBarcode('CODE-3');
+      await emitBarcode('CODE-4');
+      await tester.pump();
+
+      expect(validations, 1);
+
+      gate.complete(const ScanDecision.accept());
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 150));
+    });
+
+    testWidgets('a scan during feedback is not validated twice', (
+      tester,
+    ) async {
+      var validations = 0;
+      await pumpScanner(
+        tester,
+        validate: (_) async {
+          validations += 1;
+          return const ScanDecision.accept();
+        },
+      );
+
+      await emitBarcode('CODE-5');
+      await tester.pump();
+      expect(validations, 1);
+
+      await emitBarcode('CODE-6');
+      await tester.pump();
+      expect(validations, 1, reason: 'feedback is still showing');
+
+      await tester.pump(const Duration(milliseconds: 150));
+      await emitBarcode('CODE-7');
+      await tester.pump();
+      expect(validations, 2, reason: 'the loop is idle again');
+
+      await tester.pump(const Duration(milliseconds: 150));
+    });
+
+    testWidgets('a throwing validator rejects and still resumes', (
+      tester,
+    ) async {
+      final errors = <FlutterErrorDetails>[];
+      final previous = FlutterError.onError;
+      FlutterError.onError = errors.add;
+
+      final controller = await pumpScanner(
+        tester,
+        validate: (_) async => throw StateError('backend down'),
+      );
+
+      await emitBarcode('CODE-8');
+      await tester.pump();
+      final feedback = controller.currentFeedback;
+      await tester.pump(const Duration(milliseconds: 150));
+      // Restore before asserting: the binding checks that a test left
+      // FlutterError.onError as it found it, and it checks before tearDown.
+      FlutterError.onError = previous;
+
+      expect(feedback?.decision.isRejected, isTrue);
+      expect(errors, hasLength(1));
+      expect(errors.single.exception, isStateError);
+      expect(calls.map((call) => call.method), contains('resumeDetection'));
+    });
+
+    testWidgets('detection is held even when autoPauseOnScan is false', (
+      tester,
+    ) async {
+      await pumpScanner(
+        tester,
+        autoPauseOnScan: false,
+        validate: (_) async => const ScanDecision.accept(),
+      );
+
+      await emitBarcode('CODE-9');
+      await tester.pump();
+
+      expect(calls.map((call) => call.method), contains('pauseDetection'));
+
+      await tester.pump(const Duration(milliseconds: 150));
+    });
+
+    testWidgets('a decision arriving after disposal is discarded', (
+      tester,
+    ) async {
+      final gate = Completer<ScanDecision>();
+      final controller = await pumpScanner(tester, validate: (_) => gate.future);
+
+      await emitBarcode('CODE-10');
+      await tester.pump();
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      calls.clear();
+
+      gate.complete(const ScanDecision.accept(message: 'late'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 150));
+
+      expect(controller.currentFeedback, isNull);
+      expect(calls, isEmpty);
+    });
+
+    testWidgets('zero feedback duration resumes immediately', (tester) async {
+      final controller = await pumpScanner(
+        tester,
+        feedback: Duration.zero,
+        validate: (_) async => const ScanDecision.accept(),
+      );
+
+      await emitBarcode('CODE-11');
+      await tester.pump();
+      await tester.pump();
+
+      expect(controller.currentFeedback, isNull);
+      expect(calls.map((call) => call.method), contains('resumeDetection'));
+    });
+
+    testWidgets('onScan still fires for every result', (tester) async {
+      final seen = <String>[];
+      await pumpScanner(
+        tester,
+        validate: (_) async => const ScanDecision.accept(),
+        onScan: (result) => seen.add(result.rawValue),
+      );
+
+      await emitBarcode('CODE-12');
+      await tester.pump();
+      await emitBarcode('CODE-13');
+      await tester.pump();
+
+      expect(seen, ['CODE-12', 'CODE-13']);
+
+      await tester.pump(const Duration(milliseconds: 150));
     });
   });
 }

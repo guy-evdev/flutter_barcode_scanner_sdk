@@ -49,6 +49,7 @@ class FlutterBarcodeScannerView extends StatefulWidget {
     this.widgetConfig = const FlutterBarcodeScannerWidgetConfig(),
     this.controller,
     this.onScan,
+    this.onScanValidate,
     this.autoStart = true,
     this.autoPauseOnScan = true,
     this.overlayBuilder,
@@ -69,7 +70,39 @@ class FlutterBarcodeScannerView extends StatefulWidget {
   final FlutterBarcodeScannerController? controller;
 
   /// Called whenever the native embedded scanner emits a scan result.
+  ///
+  /// Fires for every result, including cancellations and errors, and before
+  /// [onScanValidate].
   final ValueChanged<FlutterBarcodeScanResult>? onScan;
+
+  /// Validates each barcode and drives the accept/reject loop.
+  ///
+  /// Supplying this turns the scanner into a scan → validate → accept/reject
+  /// loop and takes over pause and resume: detection is held while the returned
+  /// future is awaited, accepted or rejected feedback is shown for
+  /// [FlutterBarcodeScannerWidgetConfig.validationFeedbackDuration], and
+  /// detection then resumes automatically. Do not call
+  /// [FlutterBarcodeScannerController.resumeDetection] yourself while using it.
+  ///
+  /// Detection is held for the whole decision regardless of [autoPauseOnScan],
+  /// so a slow backend cannot produce a second scan of the same code. Results
+  /// arriving while a decision is pending, or while its feedback is showing,
+  /// are passed to [onScan] but not validated again.
+  ///
+  /// If the future throws, the error is reported through `FlutterError` and the
+  /// scan is treated as rejected, so a failing backend leaves the scanner
+  /// usable rather than wedged. A decision that completes after the widget is
+  /// disposed, or after the scanner moved on, is discarded.
+  ///
+  /// ```dart
+  /// onScanValidate: (result) async {
+  ///   final check = await api.validate(result.rawValue);
+  ///   return check.isValid
+  ///       ? const ScanDecision.accept(message: 'Admitted')
+  ///       : const ScanDecision.reject(message: 'Already used');
+  /// }
+  /// ```
+  final Future<ScanDecision> Function(FlutterBarcodeScanResult)? onScanValidate;
 
   /// Whether the native camera should start automatically after the platform
   /// view is created.
@@ -92,6 +125,12 @@ class FlutterBarcodeScannerView extends StatefulWidget {
       _FlutterBarcodeScannerViewState();
 }
 
+/// Where the validate loop currently is.
+///
+/// Only [idle] accepts a new result for validation; the other two exist so a
+/// second decode during a decision or its feedback cannot start a second cycle.
+enum _ValidationPhase { idle, validating, showingFeedback }
+
 class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     with WidgetsBindingObserver {
   late FlutterBarcodeScannerController _controller;
@@ -106,6 +145,12 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   bool _restorePausedDetectionOnResume = false;
   bool _torchEnabled = false;
   int _platformViewGeneration = 0;
+  _ValidationPhase _validationPhase = _ValidationPhase.idle;
+  // Bumped whenever a validation cycle starts, is abandoned, or the widget goes
+  // away. A decision that resolves against a stale generation is discarded,
+  // which is what makes a slow backend safe.
+  int _validationGeneration = 0;
+  Timer? _feedbackTimer;
 
   @override
   void initState() {
@@ -194,8 +239,101 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _abandonValidation();
     _releaseController();
     super.dispose();
+  }
+
+  /// Drops any pending decision and clears feedback.
+  ///
+  /// Incrementing the generation is what makes an already-running validator
+  /// harmless: its result no longer matches and is discarded on arrival.
+  void _abandonValidation() {
+    _validationGeneration += 1;
+    _validationPhase = _ValidationPhase.idle;
+    _feedbackTimer?.cancel();
+    _feedbackTimer = null;
+  }
+
+  Future<void> _handleResult(FlutterBarcodeScanResult result) async {
+    widget.onScan?.call(result);
+
+    final validate = widget.onScanValidate;
+    if (validate == null || !result.isBarcode) {
+      return;
+    }
+    // A result arriving mid-cycle is reported but never validated twice.
+    if (_validationPhase != _ValidationPhase.idle) {
+      return;
+    }
+
+    final generation = ++_validationGeneration;
+    if (mounted) {
+      setState(() => _validationPhase = _ValidationPhase.validating);
+    } else {
+      _validationPhase = _ValidationPhase.validating;
+    }
+
+    // Hold detection even when the caller opted out of native auto-pause, so
+    // the decision cannot race a second read of the same code.
+    if (!widget.autoPauseOnScan) {
+      await _invokeControllerSafely(_controller.pauseDetection);
+    }
+
+    ScanDecision decision;
+    try {
+      decision = await validate(result);
+    } catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'flutter_barcode_scanner_sdk',
+          context: ErrorDescription('while validating a scan result'),
+        ),
+      );
+      decision = const ScanDecision.reject();
+    }
+
+    if (!mounted || generation != _validationGeneration) {
+      return;
+    }
+
+    _controller.publishFeedback(
+      FlutterBarcodeScanFeedback(decision: decision, result: result),
+    );
+    setState(() => _validationPhase = _ValidationPhase.showingFeedback);
+
+    final holdFor = widget.widgetConfig.validationFeedbackDuration;
+    if (holdFor <= Duration.zero) {
+      await _finishValidation(generation);
+      return;
+    }
+    _feedbackTimer = Timer(holdFor, () => unawaited(_finishValidation(generation)));
+  }
+
+  Future<void> _finishValidation(int generation) async {
+    if (!mounted || generation != _validationGeneration) {
+      return;
+    }
+    _feedbackTimer = null;
+    _controller.publishFeedback(null);
+    setState(() => _validationPhase = _ValidationPhase.idle);
+    await _invokeControllerSafely(_controller.resumeDetection);
+  }
+
+  /// Runs a controller call that is meaningless once the view is detached.
+  ///
+  /// The controller throws [StateError] when it has no platform view, which is
+  /// an ordinary outcome if the scanner was torn down mid-decision.
+  Future<void> _invokeControllerSafely(Future<void> Function() action) async {
+    try {
+      await action();
+    } on StateError {
+      // Detached or disposed while the decision was in flight — expected.
+    } catch (error, stackTrace) {
+      _handleControllerError(error, stackTrace);
+    }
   }
 
   @override
@@ -217,9 +355,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
                     overlayColor: widget.config.overlayColor,
                     cornerRadius:
                         widget.config.scanWindow.effectiveCornerRadius,
-                    borderColor: _isDetectionPaused
-                        ? widget.widgetConfig.pausedScanWindowBorderColor
-                        : widget.widgetConfig.scanWindowBorderColor,
+                    borderColor: _scanWindowBorderColor,
                   ),
                 ),
               ),
@@ -229,6 +365,8 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
               )
             else if (_canRenderScannerUi)
               _buildDefaultControls(context),
+            if (_feedback != null && widget.overlayBuilder == null)
+              Positioned.fill(child: _buildValidationFeedback(context, _feedback!)),
             if (_isLoadingState)
               Positioned.fill(child: _buildLoading(context))
             else if (_lastError != null)
@@ -411,6 +549,83 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   bool get _isLoadingState =>
       _state == FlutterBarcodeScannerViewState.initializing;
 
+  /// The feedback to render, or `null` when no decision is being shown.
+  FlutterBarcodeScanFeedback? get _feedback =>
+      _validationPhase == _ValidationPhase.showingFeedback
+      ? _controller.currentFeedback
+      : null;
+
+  /// Accepted and rejected are signalled on the scan-window border as well as
+  /// the banner, so the outcome is legible without reading text.
+  Color get _scanWindowBorderColor {
+    final feedback = _feedback;
+    if (feedback != null) {
+      return feedback.decision.isAccepted
+          ? _acceptedColor
+          : _rejectedColor;
+    }
+    return _isDetectionPaused
+        ? widget.widgetConfig.pausedScanWindowBorderColor
+        : widget.widgetConfig.scanWindowBorderColor;
+  }
+
+  /// Default accepted/rejected treatment.
+  ///
+  /// Deliberately not exposed as configuration: overlay styling has a single
+  /// extension point, [FlutterBarcodeScannerView.overlayBuilder], which
+  /// replaces this entirely and can read
+  /// [FlutterBarcodeScannerController.feedbackListenable].
+  Widget _buildValidationFeedback(
+    BuildContext context,
+    FlutterBarcodeScanFeedback feedback,
+  ) {
+    final accepted = feedback.decision.isAccepted;
+    final color = accepted ? _acceptedColor : _rejectedColor;
+    final message = feedback.decision.message;
+    return IgnorePointer(
+      child: ColoredBox(
+        color: color.withValues(alpha: 0.22),
+        child: Center(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(28),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 20,
+                vertical: 12,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    accepted ? Icons.check_circle : Icons.cancel,
+                    color: Colors.white,
+                    size: 28,
+                  ),
+                  if (message != null && message.isNotEmpty) ...[
+                    const SizedBox(width: 10),
+                    Flexible(
+                      child: Text(
+                        message,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   bool get _isDetectionPaused =>
       _state == FlutterBarcodeScannerViewState.detectionPaused;
 
@@ -459,9 +674,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     // the view showing `idle` until something happened to it.
     _state = _controller.currentState;
     _controller.stateListenable.addListener(_handleControllerStateChanged);
-    _resultSubscription = _controller.results.listen((result) {
-      widget.onScan?.call(result);
-    });
+    _resultSubscription = _controller.results.listen(_handleResult);
     _errorSubscription = _controller.errors.listen((error) {
       if (mounted) {
         setState(() {
@@ -645,3 +858,9 @@ class _ScannerOverlayPainter extends CustomPainter {
         oldDelegate.borderColor != borderColor;
   }
 }
+
+/// Default accepted feedback colour.
+const Color _acceptedColor = Color(0xFF2E7D32);
+
+/// Default rejected feedback colour.
+const Color _rejectedColor = Color(0xFFC62828);

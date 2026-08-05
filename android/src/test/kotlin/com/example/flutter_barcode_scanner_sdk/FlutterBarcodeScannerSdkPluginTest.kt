@@ -69,7 +69,7 @@ internal class FlutterBarcodeScannerSdkPluginTest {
         )
 
         assertEquals(listOf("QR_CODE", "CODE_128"), config.allowedFormats)
-        assertEquals("Scan Ticket", config.strings.title)
+        assertEquals("Scan Barcode", config.strings.title)
         assertFalse(config.showFlashButton)
         assertTrue(config.showCameraSwitchButton)
         assertEquals("front", config.initialCameraLens)

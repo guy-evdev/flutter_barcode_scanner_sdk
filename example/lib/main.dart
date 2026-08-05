@@ -818,7 +818,7 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
     final overlayOpacity = _overlayOptions[_overlayOpacityIndex];
     final strings = switch (_language) {
       ShowcaseLanguage.english => const FlutterBarcodeScannerStrings(
-        title: 'Scan Ticket',
+        title: 'Scan Barcode',
         close: 'Close',
         flashOn: 'Flash on',
         flashOff: 'Flash off',

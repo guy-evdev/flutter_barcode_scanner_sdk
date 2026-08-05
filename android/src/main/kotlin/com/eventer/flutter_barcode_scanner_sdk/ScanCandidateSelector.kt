@@ -8,7 +8,7 @@ import kotlin.math.sqrt
  *
  * A detector returns its results in an order that has no relation to what the user is aiming at.
  * Accepting the first result that passed the scan-window test therefore let a neighbouring code
- * on a dense sheet win silently, and the app validated the wrong ticket. Candidates are ranked by
+ * on a dense sheet win silently, and the app validated the wrong code. Candidates are ranked by
  * distance from the scan-window centre instead, and the nearest wins.
  *
  * A candidate qualifies when its bounds *overlap* the scan window. Requiring the bounds' centre

@@ -84,7 +84,7 @@ Add a camera usage description to `ios/Runner/Info.plist`:
 final result = await FlutterBarcodeScanner.scan(
   FlutterBarcodeScannerConfig(
     allowedFormats: FlutterBarcodeScannerFormats.common,
-    strings: FlutterBarcodeScannerStrings(title: 'Scan ticket'),
+    strings: FlutterBarcodeScannerStrings(title: 'Scan barcode'),
   ),
 );
 
@@ -122,6 +122,26 @@ FlutterBarcodeScannerView(
   },
 );
 ```
+
+### Validate each scan
+
+For entry scanning, return a decision instead of resuming by hand. The scanner holds
+detection while your check runs, shows accepted or rejected feedback, and resumes itself:
+
+```dart
+FlutterBarcodeScannerView(
+  config: const FlutterBarcodeScannerConfig(),
+  onScanValidate: (result) async {
+    final check = await api.validate(result.rawValue);
+    return check.isValid
+        ? const ScanDecision.accept(message: 'Admitted')
+        : const ScanDecision.reject(message: 'Already used');
+  },
+);
+```
+
+A slow or failing check cannot double-scan or wedge the scanner. See
+[RECIPES.md](RECIPES.md#continuous-entry-scanning) for the details.
 
 Controller actions:
 

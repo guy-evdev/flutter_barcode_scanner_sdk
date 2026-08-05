@@ -46,7 +46,7 @@ data class ScannerConfig(
             return ScannerConfig(
                 allowedFormats = allowedFormats,
                 strings = ScannerStrings(
-                    title = stringsMap?.get("title") as? String ?: "Scan Ticket",
+                    title = stringsMap?.get("title") as? String ?: "Scan Barcode",
                     close = stringsMap?.get("close") as? String ?: "Close",
                     flashOn = stringsMap?.get("flashOn") as? String ?: "Flash on",
                     flashOff = stringsMap?.get("flashOff") as? String ?: "Flash off",

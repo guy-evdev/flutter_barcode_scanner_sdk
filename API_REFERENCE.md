@@ -8,6 +8,7 @@ This reference summarizes the public Dart API for `flutter_barcode_scanner_sdk`.
 - [Scanner Configuration](#scanner-configuration)
 - [Embedded Widget Configuration](#embedded-widget-configuration)
 - [Controller](#controller)
+- [Validation](#validation)
 - [Results](#results)
 - [Formats](#formats)
 
@@ -57,7 +58,7 @@ whose out-of-range factors happen to clamp to the same result are not equal.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `title` | `String` | `Scan Ticket` | Full-screen scanner title. |
+| `title` | `String` | `Scan Barcode` | Full-screen scanner title. |
 | `close` | `String` | `Close` | Close button label. |
 | `flashOn` | `String` | `Flash on` | Enable-flash label. |
 | `flashOff` | `String` | `Flash off` | Disable-flash label. |
@@ -105,7 +106,8 @@ and negative corner radii become zero. The effective values are available from
 | `config` | `FlutterBarcodeScannerConfig` | required | Shared scanner configuration. |
 | `widgetConfig` | `FlutterBarcodeScannerWidgetConfig` | `FlutterBarcodeScannerWidgetConfig()` | Flutter-side embedded scanner behavior. |
 | `controller` | `FlutterBarcodeScannerController?` | `null` | Optional external controller. |
-| `onScan` | `ValueChanged<FlutterBarcodeScanResult>?` | `null` | Receives embedded scan results. |
+| `onScan` | `ValueChanged<FlutterBarcodeScanResult>?` | `null` | Receives every embedded scan result, before `onScanValidate`. |
+| `onScanValidate` | `Future<ScanDecision> Function(FlutterBarcodeScanResult)?` | `null` | Drives the scan → validate → accept/reject loop. Holds detection for the decision, shows feedback, then resumes. |
 | `autoStart` | `bool` | `true` | Starts the camera automatically after platform-view creation. |
 | `autoPauseOnScan` | `bool` | `true` | Pauses detection automatically after each result. |
 | `overlayBuilder` | `FlutterBarcodeScannerOverlayBuilder?` | `null` | Replaces the default overlay controls. |
@@ -123,6 +125,7 @@ and negative corner radii become zero. The effective values are available from
 | `pausedScanWindowBorderColor` | `Color` | `Color(0xFFE53935)` | Scan-window border while detection is paused. |
 | `pauseTooltip` | `String` | `Pause scanner` | Pause button tooltip. |
 | `resumeTooltip` | `String` | `Resume scanner` | Resume button tooltip. |
+| `validationFeedbackDuration` | `Duration` | `900ms` | How long accepted/rejected feedback shows before detection resumes. `Duration.zero` resumes immediately with no feedback. Only used with `onScanValidate`. |
 
 ## Controller
 
@@ -135,6 +138,8 @@ and negative corner radii become zero. The effective values are available from
 | `results` | `Stream<FlutterBarcodeScanResult>` | Embedded scan results. |
 | `state` | `Stream<FlutterBarcodeScannerViewState>` | Native scanner lifecycle states. Delivers every emission, including a repeat of the current state. |
 | `errors` | `Stream<PlatformException>` | Native scanner errors. |
+| `feedbackListenable` | `ValueListenable<FlutterBarcodeScanFeedback?>` | Accept/reject feedback currently on screen, or `null`. Read it from a custom `overlayBuilder`. |
+| `currentFeedback` | `FlutterBarcodeScanFeedback?` | The same value, read synchronously. |
 | `isAttached` | `bool` | Whether the controller is attached to a platform view. |
 | `viewId` | `int?` | Current platform view id. |
 
@@ -162,6 +167,32 @@ ValueListenableBuilder<FlutterBarcodeScannerViewState>(
 | `switchCamera([lens])` | Switches to the requested lens or toggles when omitted. |
 | `updateConfig(config, autoPauseOnScan, widgetConfig)` | Applies updated native and widget configuration. |
 | `dispose()` | Releases native resources and closes streams. |
+
+## Validation
+
+### `ScanDecision`
+
+Returned from `onScanValidate`.
+
+| Constructor | Description |
+| --- | --- |
+| `ScanDecision.accept({String? message})` | Accepts the scan; `message` is shown in the feedback overlay. |
+| `ScanDecision.reject({String? message})` | Rejects the scan; `message` is shown in the feedback overlay. |
+
+| Field or Getter | Type | Description |
+| --- | --- | --- |
+| `outcome` | `FlutterBarcodeScanDecisionOutcome` | `accepted` or `rejected`. |
+| `message` | `String?` | Optional caption. `null` shows the outcome alone. |
+| `isAccepted` / `isRejected` | `bool` | Convenience checks on `outcome`. |
+
+### `FlutterBarcodeScanFeedback`
+
+Published on `FlutterBarcodeScannerController.feedbackListenable` while feedback is showing.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `decision` | `ScanDecision` | The decision returned by the validator. |
+| `result` | `FlutterBarcodeScanResult` | The scan the decision was made about. |
 
 ## Results
 

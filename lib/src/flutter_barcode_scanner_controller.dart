@@ -66,6 +66,42 @@ class FlutterBarcodeScannerController {
   ValueListenable<FlutterBarcodeScannerViewState> get stateListenable =>
       _stateNotifier;
 
+  final ValueNotifier<FlutterBarcodeScanFeedback?> _feedbackNotifier =
+      ValueNotifier<FlutterBarcodeScanFeedback?>(null);
+
+  /// The accept/reject feedback currently being shown, or `null` when none is.
+  ///
+  /// Only ever non-null while `FlutterBarcodeScannerView.onScanValidate` is in
+  /// use and its feedback is on screen.
+  FlutterBarcodeScanFeedback? get currentFeedback => _feedbackNotifier.value;
+
+  /// The accept/reject feedback as a listenable value.
+  ///
+  /// A custom `overlayBuilder` receives this controller, so read this to render
+  /// your own accepted/rejected treatment:
+  ///
+  /// ```dart
+  /// ValueListenableBuilder<FlutterBarcodeScanFeedback?>(
+  ///   valueListenable: controller.feedbackListenable,
+  ///   builder: (context, feedback, _) => feedback == null
+  ///       ? const SizedBox.shrink()
+  ///       : Banner(message: feedback.decision.message),
+  /// )
+  /// ```
+  ValueListenable<FlutterBarcodeScanFeedback?> get feedbackListenable =>
+      _feedbackNotifier;
+
+  /// Publishes accept/reject feedback to [feedbackListenable].
+  ///
+  /// Called by [FlutterBarcodeScannerView] as it drives the validate loop.
+  /// Applications usually do not call it directly.
+  void publishFeedback(FlutterBarcodeScanFeedback? feedback) {
+    if (_disposed) {
+      return;
+    }
+    _feedbackNotifier.value = feedback;
+  }
+
   /// Stream of native scanner errors.
   Stream<PlatformException> get errors => _errorController.stream;
 
@@ -148,6 +184,7 @@ class FlutterBarcodeScannerController {
     _channel = null;
     _viewId = null;
     _stateNotifier.dispose();
+    _feedbackNotifier.dispose();
     await Future.wait([
       _resultsController.close(),
       _stateController.close(),

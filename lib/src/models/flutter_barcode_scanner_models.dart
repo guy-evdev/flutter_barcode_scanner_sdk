@@ -81,7 +81,7 @@ abstract final class FlutterBarcodeScannerFormats {
     FlutterBarcodeScannerFormat.aztec,
   };
 
-  /// The most common ticket, retail, and QR formats.
+  /// The most common retail, logistics, and QR formats.
   static const Set<FlutterBarcodeScannerFormat> common = {
     FlutterBarcodeScannerFormat.qrCode,
     FlutterBarcodeScannerFormat.code128,
@@ -241,7 +241,7 @@ class FlutterBarcodeScannerStatusBarStyle {
 class FlutterBarcodeScannerStrings {
   /// Creates UI strings for full-screen and embedded scanner controls.
   const FlutterBarcodeScannerStrings({
-    this.title = 'Scan Ticket',
+    this.title = 'Scan Barcode',
     this.close = 'Close',
     this.flashOn = 'Flash on',
     this.flashOff = 'Flash off',
@@ -514,6 +514,104 @@ class FlutterBarcodeScannerUiConfig {
   );
 }
 
+/// Whether a validated scan was accepted or rejected.
+enum FlutterBarcodeScanDecisionOutcome {
+  /// The scan was accepted.
+  accepted,
+
+  /// The scan was rejected.
+  rejected,
+}
+
+/// The outcome returned from `FlutterBarcodeScannerView.onScanValidate`.
+///
+/// Returning a decision drives the scan → validate → accept/reject loop: the
+/// scanner holds detection while the decision is awaited, shows accepted or
+/// rejected feedback for
+/// [FlutterBarcodeScannerWidgetConfig.validationFeedbackDuration], then resumes
+/// on its own.
+///
+/// ```dart
+/// onScanValidate: (result) async {
+///   final check = await api.validate(result.rawValue);
+///   return check.isValid
+///       ? const ScanDecision.accept(message: 'Admitted')
+///       : const ScanDecision.reject(message: 'Already used');
+/// }
+/// ```
+@immutable
+class ScanDecision {
+  /// Accepts the scan, optionally showing [message] in the feedback overlay.
+  const ScanDecision.accept({this.message})
+    : outcome = FlutterBarcodeScanDecisionOutcome.accepted;
+
+  /// Rejects the scan, optionally showing [message] in the feedback overlay.
+  const ScanDecision.reject({this.message})
+    : outcome = FlutterBarcodeScanDecisionOutcome.rejected;
+
+  /// Whether the scan was accepted or rejected.
+  final FlutterBarcodeScanDecisionOutcome outcome;
+
+  /// Optional text shown in the feedback overlay.
+  ///
+  /// `null` shows the outcome without a caption.
+  final String? message;
+
+  /// Whether this decision accepted the scan.
+  bool get isAccepted =>
+      outcome == FlutterBarcodeScanDecisionOutcome.accepted;
+
+  /// Whether this decision rejected the scan.
+  bool get isRejected =>
+      outcome == FlutterBarcodeScanDecisionOutcome.rejected;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is ScanDecision &&
+        other.outcome == outcome &&
+        other.message == message;
+  }
+
+  @override
+  int get hashCode => Object.hash(outcome, message);
+}
+
+/// A decision paired with the scan it was made about.
+///
+/// Published on [FlutterBarcodeScannerController.feedbackListenable] while the
+/// feedback overlay is showing, and `null` at every other time. Read it to
+/// render accepted/rejected state from a custom `overlayBuilder`.
+@immutable
+class FlutterBarcodeScanFeedback {
+  /// Creates feedback for a validated scan.
+  const FlutterBarcodeScanFeedback({
+    required this.decision,
+    required this.result,
+  });
+
+  /// The decision returned by the validator.
+  final ScanDecision decision;
+
+  /// The scan the decision was made about.
+  final FlutterBarcodeScanResult result;
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    return other is FlutterBarcodeScanFeedback &&
+        other.decision == decision &&
+        other.result == result;
+  }
+
+  @override
+  int get hashCode => Object.hash(decision, result);
+}
+
 /// Flutter-side configuration for [FlutterBarcodeScannerView].
 @immutable
 class FlutterBarcodeScannerWidgetConfig {
@@ -530,6 +628,7 @@ class FlutterBarcodeScannerWidgetConfig {
     this.pausedScanWindowBorderColor = const Color(0xFFE53935),
     this.pauseTooltip = 'Pause scanner',
     this.resumeTooltip = 'Resume scanner',
+    this.validationFeedbackDuration = const Duration(milliseconds: 900),
   });
 
   /// Whether the widget should request camera permission before creating the
@@ -568,6 +667,14 @@ class FlutterBarcodeScannerWidgetConfig {
   /// Tooltip for the default resume button.
   final String resumeTooltip;
 
+  /// How long accepted/rejected feedback stays on screen before detection
+  /// resumes.
+  ///
+  /// Only used when `FlutterBarcodeScannerView.onScanValidate` is supplied.
+  /// [Duration.zero] resumes as soon as the decision arrives, showing no
+  /// feedback at all.
+  final Duration validationFeedbackDuration;
+
   /// Returns a copy with selected values replaced.
   FlutterBarcodeScannerWidgetConfig copyWith({
     bool? autoRequestCameraPermission,
@@ -581,6 +688,7 @@ class FlutterBarcodeScannerWidgetConfig {
     Color? pausedScanWindowBorderColor,
     String? pauseTooltip,
     String? resumeTooltip,
+    Duration? validationFeedbackDuration,
   }) {
     return FlutterBarcodeScannerWidgetConfig(
       autoRequestCameraPermission:
@@ -598,6 +706,8 @@ class FlutterBarcodeScannerWidgetConfig {
           pausedScanWindowBorderColor ?? this.pausedScanWindowBorderColor,
       pauseTooltip: pauseTooltip ?? this.pauseTooltip,
       resumeTooltip: resumeTooltip ?? this.resumeTooltip,
+      validationFeedbackDuration:
+          validationFeedbackDuration ?? this.validationFeedbackDuration,
     );
   }
 
@@ -633,7 +743,8 @@ class FlutterBarcodeScannerWidgetConfig {
         other.scanWindowBorderColor == scanWindowBorderColor &&
         other.pausedScanWindowBorderColor == pausedScanWindowBorderColor &&
         other.pauseTooltip == pauseTooltip &&
-        other.resumeTooltip == resumeTooltip;
+        other.resumeTooltip == resumeTooltip &&
+        other.validationFeedbackDuration == validationFeedbackDuration;
   }
 
   @override
@@ -646,6 +757,7 @@ class FlutterBarcodeScannerWidgetConfig {
     pausedScanWindowBorderColor,
     pauseTooltip,
     resumeTooltip,
+    validationFeedbackDuration,
   );
 }
 

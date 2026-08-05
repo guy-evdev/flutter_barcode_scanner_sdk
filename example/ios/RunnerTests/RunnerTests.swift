@@ -133,7 +133,7 @@ class RunnerTests: XCTestCase {
     func testResolveRejectsAnUnrequestedFormat() {
         let resolved = ScannerFormat.resolve(
             for: .code128,
-            value: "TICKET-1",
+            value: "CODE-1",
             allowedFormatNames: ["QR_CODE"]
         )
 
@@ -170,11 +170,11 @@ class RunnerTests: XCTestCase {
     }
 
     func testBarcodePayloadCarriesTheResolvedFormat() {
-        let payload = ScannerPayload.barcode(value: "TICKET-1", format: "CODE_128")
+        let payload = ScannerPayload.barcode(value: "CODE-1", format: "CODE_128")
 
         XCTAssertEqual(payload["type"] as? String, "barcode")
         XCTAssertEqual(payload["format"] as? String, "CODE_128")
-        XCTAssertEqual(payload["rawValue"] as? String, "TICKET-1")
+        XCTAssertEqual(payload["rawValue"] as? String, "CODE-1")
     }
 
     // MARK: - B8, interruption and runtime-error recovery

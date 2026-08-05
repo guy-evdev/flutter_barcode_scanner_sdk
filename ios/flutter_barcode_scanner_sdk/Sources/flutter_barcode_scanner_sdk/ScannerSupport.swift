@@ -11,7 +11,7 @@ struct ScannerStrings {
     let cameraUnavailable: String
 
     init(map: [String: Any]?) {
-        title = map?["title"] as? String ?? "Scan Ticket"
+        title = map?["title"] as? String ?? "Scan Barcode"
         close = map?["close"] as? String ?? "Close"
         flashOn = map?["flashOn"] as? String ?? "Flash on"
         flashOff = map?["flashOff"] as? String ?? "Flash off"
@@ -314,7 +314,7 @@ struct ScanCandidate {
 ///
 /// AVFoundation returns metadata objects in an order that has no relation to what the user is
 /// aiming at. Accepting the first object that passed the scan-window test therefore let a
-/// neighbouring code on a dense sheet win silently, and the app validated the wrong ticket.
+/// neighbouring code on a dense sheet win silently, and the app validated the wrong code.
 /// Candidates are ranked by distance from the scan-window centre instead, and the nearest wins.
 ///
 /// A candidate qualifies when its bounds *overlap* the scan window. Requiring the bounds' centre
