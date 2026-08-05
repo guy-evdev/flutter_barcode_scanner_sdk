@@ -27,14 +27,16 @@ internal class FlutterBarcodeScannerSdkPluginTest {
     }
 
     @Test
-    fun requestPermissionWithoutAttachedActivityReturnsFalse() {
+    fun requestPermissionWithoutAttachedActivityReportsDenied() {
         val plugin = FlutterBarcodeScannerSdkPlugin()
         val call = MethodCall("requestCameraPermission", null)
         val result: MethodChannel.Result = Mockito.mock(MethodChannel.Result::class.java)
 
         plugin.onMethodCall(call, result)
 
-        Mockito.verify(result).success(false)
+        // Not "granted", and not an error: no activity means no prompt is
+        // possible, which is a denial from the caller's point of view.
+        Mockito.verify(result).success("denied")
     }
 
     @Test

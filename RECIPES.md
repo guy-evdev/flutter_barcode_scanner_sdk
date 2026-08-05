@@ -10,6 +10,7 @@ the two common flows; everything here is the long tail.
   - [Haptics and sound](#haptics-and-sound)
 - [Reacting to scanner state](#reacting-to-scanner-state)
 - [Handling errors](#handling-errors)
+- [Camera permission](#camera-permission)
 - [Custom overlays](#custom-overlays)
 - [Scan-window geometry](#scan-window-geometry)
 - [Choosing formats](#choosing-formats)
@@ -177,6 +178,53 @@ seconds, then reports this and picks the start back up if the parent later gains
 ends and emits `running` again. Treat it as a reason to show a "camera unavailable" hint, not
 as a reason to tear the scanner down.
 
+## Camera permission
+
+`checkCameraPermission()` never prompts, so use it to decide what to show; `requestCameraPermission()`
+prompts only when the system still would.
+
+```dart
+final status = await FlutterBarcodeScanner.checkCameraPermission();
+if (status.canRequest) {
+  await FlutterBarcodeScanner.requestCameraPermission();
+} else if (status.requiresSettings) {
+  await FlutterBarcodeScanner.openAppSettings();
+}
+```
+
+With `autoRequestCameraPermission: true` (the default) the embedded view does this for you and
+renders a denied state offering only the action that can help — a retry where the system will
+still prompt, Settings where it will not, and neither when a device policy forbids the camera.
+It also re-checks when the app returns to the foreground, so granting access in Settings brings
+the scanner back without a restart.
+
+Replace that UI with `permissionBuilder`:
+
+```dart
+FlutterBarcodeScannerView(
+  config: const FlutterBarcodeScannerConfig(),
+  permissionBuilder: (context, status, retry) => Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text('Camera unavailable: ${status.name}'),
+        if (status.canRequest)
+          TextButton(onPressed: retry, child: const Text('Try again')),
+        if (status.requiresSettings)
+          TextButton(
+            onPressed: FlutterBarcodeScanner.openAppSettings,
+            child: const Text('Settings'),
+          ),
+      ],
+    ),
+  ),
+);
+```
+
+The status values differ by platform in two ways that matter — iOS never reports `denied`, and
+Android's `notDetermined` is inferred rather than read from the system. See
+[Platform differences](#platform-differences).
+
 ## Custom overlays
 
 Three builders replace the default Flutter-side chrome. The native preview is untouched.
@@ -268,6 +316,9 @@ These are real asymmetries, not implementation details you can ignore.
 | Unsupported format set | ML Kit accepts every supported format | Reports `UNSUPPORTED_FORMATS` when the device offers none of them |
 | Session interruption | Not observable | `SESSION_INTERRUPTED` / auto-recovery, see [Handling errors](#handling-errors) |
 | Zero-size preview | Retries, then `PREVIEW_UNAVAILABLE` | No equivalent report |
+| Permission `denied` | Reported after a refusal that can be re-prompted | Never reported — a refusal is already final |
+| Permission `restricted` | Never reported | Reported when a device policy forbids the camera |
+| Permission `notDetermined` | Inferred from a recorded "have we asked" flag | Read directly from `AVAuthorizationStatus` |
 
 **UPC-A and EAN-13 need care on iOS.** AVFoundation cannot distinguish them, so the plugin
 decides from the decoded value: a 13-digit value with a leading zero is reported as `UPC_A`,

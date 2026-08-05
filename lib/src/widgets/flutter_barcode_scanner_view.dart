@@ -29,6 +29,19 @@ typedef FlutterBarcodeScannerStateBuilder =
       FlutterBarcodeScannerController controller,
     );
 
+/// Builds custom content for a camera-permission state that blocks scanning.
+///
+/// [retry] re-requests permission, and is a no-op when the platform will no
+/// longer prompt — check [FlutterBarcodePermissionStatus.canRequest] before
+/// offering it. Use [FlutterBarcodeScanner.openAppSettings] for the states
+/// where only Settings can help.
+typedef FlutterBarcodeScannerPermissionBuilder =
+    Widget Function(
+      BuildContext context,
+      FlutterBarcodePermissionStatus status,
+      VoidCallback retry,
+    );
+
 /// Builds custom error content for native embedded scanner errors.
 typedef FlutterBarcodeScannerErrorBuilder =
     Widget Function(
@@ -55,6 +68,7 @@ class FlutterBarcodeScannerView extends StatefulWidget {
     this.overlayBuilder,
     this.loadingBuilder,
     this.errorBuilder,
+    this.permissionBuilder,
     super.key,
   });
 
@@ -120,6 +134,9 @@ class FlutterBarcodeScannerView extends StatefulWidget {
   /// Optional builder for replacing the default error overlay.
   final FlutterBarcodeScannerErrorBuilder? errorBuilder;
 
+  /// Optional builder for replacing the default permission-denied UI.
+  final FlutterBarcodeScannerPermissionBuilder? permissionBuilder;
+
   @override
   State<FlutterBarcodeScannerView> createState() =>
       _FlutterBarcodeScannerViewState();
@@ -139,7 +156,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   StreamSubscription<PlatformException>? _errorSubscription;
   FlutterBarcodeScannerViewState _state = FlutterBarcodeScannerViewState.idle;
   PlatformException? _lastError;
-  bool? _hasCameraPermission;
+  FlutterBarcodePermissionStatus? _permissionStatus;
   bool _isRequestingPermission = false;
   bool _restartCameraOnResume = false;
   bool _restorePausedDetectionOnResume = false;
@@ -204,6 +221,9 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // Re-read rather than re-request: the user may have just granted access
+      // in Settings, and prompting again there would be wrong.
+      unawaited(_refreshPermissionOnResume());
       unawaited(_ensureCameraPermission());
     }
     if (!_controller.isAttached) {
@@ -353,7 +373,10 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
       await _finishValidation(generation);
       return;
     }
-    _feedbackTimer = Timer(holdFor, () => unawaited(_finishValidation(generation)));
+    _feedbackTimer = Timer(
+      holdFor,
+      () => unawaited(_finishValidation(generation)),
+    );
   }
 
   Future<void> _finishValidation(int generation) async {
@@ -374,7 +397,8 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   Future<void> _playAcceptFeedback() async {
     final config = widget.widgetConfig;
     if (config.hapticFeedbackOnAccept && mounted) {
-      final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+      final reduceMotion =
+          MediaQuery.maybeDisableAnimationsOf(context) ?? false;
       if (!reduceMotion) {
         await HapticFeedback.selectionClick();
       }
@@ -428,7 +452,9 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
             else if (_canRenderScannerUi)
               _buildDefaultControls(context),
             if (_feedback != null && widget.overlayBuilder == null)
-              Positioned.fill(child: _buildValidationFeedback(context, _feedback!)),
+              Positioned.fill(
+                child: _buildValidationFeedback(context, _feedback!),
+              ),
             if (_isLoadingState)
               Positioned.fill(child: _buildLoading(context))
             else if (_lastError != null)
@@ -442,28 +468,20 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   Widget _buildPlatformView(BuildContext context) {
     if (widget.widgetConfig.autoRequestCameraPermission &&
         _supportsCameraPlatform) {
-      if (_isRequestingPermission || _hasCameraPermission == null) {
+      if (_isRequestingPermission || _permissionStatus == null) {
         return const ColoredBox(
           color: Colors.black,
           child: Center(child: CircularProgressIndicator.adaptive()),
         );
       }
-      if (_hasCameraPermission == false) {
-        return ColoredBox(
-          color: Colors.black,
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                widget.config.strings.cameraPermissionRequired,
-                style: Theme.of(
-                  context,
-                ).textTheme.bodyLarge?.copyWith(color: Colors.white),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ),
-        );
+      final status = _permissionStatus;
+      if (status != null && !status.isGranted) {
+        return widget.permissionBuilder?.call(
+              context,
+              status,
+              _retryPermission,
+            ) ??
+            _buildPermissionDenied(context, status);
       }
     }
 
@@ -622,9 +640,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   Color get _scanWindowBorderColor {
     final feedback = _feedback;
     if (feedback != null) {
-      return feedback.decision.isAccepted
-          ? _acceptedColor
-          : _rejectedColor;
+      return feedback.decision.isAccepted ? _acceptedColor : _rejectedColor;
     }
     return _isDetectionPaused
         ? widget.widgetConfig.pausedScanWindowBorderColor
@@ -654,10 +670,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
               borderRadius: BorderRadius.circular(28),
             ),
             child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 12,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -694,7 +707,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   bool get _canRenderScannerUi =>
       !widget.widgetConfig.autoRequestCameraPermission ||
       !_supportsCameraPlatform ||
-      _hasCameraPermission == true;
+      _permissionStatus?.isGranted == true;
 
   Rect? _scanWindowForSize(Size size) {
     if (!widget.config.scanWindow.enabled ||
@@ -817,28 +830,120 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     if (!widget.widgetConfig.autoRequestCameraPermission ||
         !_supportsCameraPlatform ||
         _isRequestingPermission ||
-        _hasCameraPermission == true) {
+        _permissionStatus?.isGranted == true) {
       return;
     }
     setState(() {
       _isRequestingPermission = true;
     });
-    var granted = false;
+    var status = FlutterBarcodePermissionStatus.denied;
     try {
-      granted = await FlutterBarcodeScanner.requestCameraPermission();
+      final current = await FlutterBarcodeScanner.checkCameraPermission();
+      // Only prompt when the system would actually show one; asking again
+      // after a permanent denial returns immediately and looks like a hang.
+      status = current.canRequest
+          ? await FlutterBarcodeScanner.requestCameraPermission()
+          : current;
     } catch (_) {
-      granted = false;
+      status = FlutterBarcodePermissionStatus.denied;
     }
     if (!mounted) {
       return;
     }
     setState(() {
-      _hasCameraPermission = granted;
+      _permissionStatus = status;
       _isRequestingPermission = false;
-      if (granted) {
+      if (status.isGranted) {
         _lastError = null;
       }
     });
+  }
+
+  void _retryPermission() {
+    unawaited(_ensureCameraPermission());
+  }
+
+  /// Re-reads permission without prompting.
+  ///
+  /// Called when the app returns to the foreground, which is how the scanner
+  /// recovers after the user grants access in Settings — the previous version
+  /// left the denied screen up until the widget was rebuilt.
+  Future<void> _refreshPermissionOnResume() async {
+    if (!widget.widgetConfig.autoRequestCameraPermission ||
+        !_supportsCameraPlatform ||
+        _permissionStatus?.isGranted == true) {
+      return;
+    }
+    FlutterBarcodePermissionStatus status;
+    try {
+      status = await FlutterBarcodeScanner.checkCameraPermission();
+    } catch (_) {
+      return;
+    }
+    if (!mounted || status == _permissionStatus) {
+      return;
+    }
+    setState(() {
+      _permissionStatus = status;
+      if (status.isGranted) {
+        _lastError = null;
+      }
+    });
+  }
+
+  /// Default UI for a permission state that blocks scanning.
+  ///
+  /// Offers only the action that can actually help: a retry when the system
+  /// will still prompt, Settings when it will not, and neither when a device
+  /// policy forbids the camera outright.
+  Widget _buildPermissionDenied(
+    BuildContext context,
+    FlutterBarcodePermissionStatus status,
+  ) {
+    final strings = widget.config.strings;
+    final message = switch (status) {
+      FlutterBarcodePermissionStatus.permanentlyDenied =>
+        strings.cameraPermissionPermanentlyDenied,
+      FlutterBarcodePermissionStatus.restricted =>
+        strings.cameraPermissionRestricted,
+      _ => strings.cameraPermissionRequired,
+    };
+    return ColoredBox(
+      color: Colors.black,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                message,
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyLarge?.copyWith(color: Colors.white),
+                textAlign: TextAlign.center,
+              ),
+              if (status.canRequest) ...[
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: _retryPermission,
+                  child: Text(strings.permissionRetry),
+                ),
+              ],
+              if (status ==
+                  FlutterBarcodePermissionStatus.permanentlyDenied) ...[
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: () =>
+                      unawaited(FlutterBarcodeScanner.openAppSettings()),
+                  child: Text(strings.permissionOpenSettings),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   bool get _supportsCameraPlatform =>

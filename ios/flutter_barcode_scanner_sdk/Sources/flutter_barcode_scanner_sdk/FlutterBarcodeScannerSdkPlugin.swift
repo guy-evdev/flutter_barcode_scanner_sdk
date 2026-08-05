@@ -29,9 +29,15 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
         switch call.method {
         case "scan":
             handleScan(call, result: result)
+        case "checkCameraPermission":
+            result(ScannerPermission.currentStatus())
         case "requestCameraPermission":
-            requestCameraPermission { granted in
-                result(granted)
+            ScannerPermission.request { status in
+                result(status)
+            }
+        case "openAppSettings":
+            ScannerPermission.openAppSettings { opened in
+                result(opened)
             }
         default:
             result(FlutterMethodNotImplemented)
@@ -123,17 +129,8 @@ public final class FlutterBarcodeScannerSdkPlugin: NSObject, FlutterPlugin {
     }
 
     private func requestCameraPermission(_ completion: @escaping (Bool) -> Void) {
-        switch AVCaptureDevice.authorizationStatus(for: .video) {
-        case .authorized:
-            completion(true)
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { granted in
-                DispatchQueue.main.async {
-                    completion(granted)
-                }
-            }
-        default:
-            completion(false)
+        ScannerPermission.request { status in
+            completion(status == ScannerPermission.granted)
         }
     }
 

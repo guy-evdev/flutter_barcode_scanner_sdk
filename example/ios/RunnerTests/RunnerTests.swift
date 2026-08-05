@@ -177,6 +177,26 @@ class RunnerTests: XCTestCase {
         XCTAssertEqual(payload["rawValue"] as? String, "CODE-1")
     }
 
+    // MARK: - B14, permission contract
+
+    func testAuthorizedMapsToGranted() {
+        XCTAssertEqual(ScannerPermission.status(for: .authorized), "granted")
+    }
+
+    func testNotDeterminedIsPreserved() {
+        XCTAssertEqual(ScannerPermission.status(for: .notDetermined), "notDetermined")
+    }
+
+    func testRestrictedIsPreserved() {
+        XCTAssertEqual(ScannerPermission.status(for: .restricted), "restricted")
+    }
+
+    func testDeniedMapsToPermanentlyDenied() {
+        // iOS prompts once per install, so a refusal is already final. Reporting
+        // plain "denied" would invite a re-request that silently does nothing.
+        XCTAssertEqual(ScannerPermission.status(for: .denied), "permanentlyDenied")
+    }
+
     // MARK: - B8, interruption and runtime-error recovery
 
     func testMediaServicesResetIsTreatedAsRecoverable() {

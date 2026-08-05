@@ -8,6 +8,7 @@ This reference summarizes the public Dart API for `flutter_barcode_scanner_sdk`.
 - [Scanner Configuration](#scanner-configuration)
 - [Embedded Widget Configuration](#embedded-widget-configuration)
 - [Controller](#controller)
+- [Permissions](#permissions)
 - [Validation](#validation)
 - [Results](#results)
 - [Formats](#formats)
@@ -16,7 +17,9 @@ This reference summarizes the public Dart API for `flutter_barcode_scanner_sdk`.
 
 | API | Returns | Description |
 | --- | --- | --- |
-| `FlutterBarcodeScanner.requestCameraPermission()` | `Future<bool>` | Requests camera access and returns whether access is available. |
+| `FlutterBarcodeScanner.checkCameraPermission()` | `Future<FlutterBarcodePermissionStatus>` | Reports permission without prompting. |
+| `FlutterBarcodeScanner.requestCameraPermission()` | `Future<FlutterBarcodePermissionStatus>` | Requests access and returns the resulting status. Shows no prompt when the system will not. |
+| `FlutterBarcodeScanner.openAppSettings()` | `Future<bool>` | Opens this app's system settings page. Returns whether it opened. |
 | `FlutterBarcodeScanner.scan(config)` | `Future<FlutterBarcodeScanResult?>` | Opens the full-screen native scanner and returns one result. |
 | `FlutterBarcodeScannerView(...)` | `Widget` | Embeds the native scanner inside a Flutter layout. |
 
@@ -113,6 +116,7 @@ and negative corner radii become zero. The effective values are available from
 | `overlayBuilder` | `FlutterBarcodeScannerOverlayBuilder?` | `null` | Replaces the default overlay controls. |
 | `loadingBuilder` | `FlutterBarcodeScannerStateBuilder?` | `null` | Replaces the default loading overlay. |
 | `errorBuilder` | `FlutterBarcodeScannerErrorBuilder?` | `null` | Replaces the default error overlay. |
+| `permissionBuilder` | `FlutterBarcodeScannerPermissionBuilder?` | `null` | Replaces the default permission-denied UI. Receives the status and a retry callback. |
 
 ### `FlutterBarcodeScannerWidgetConfig`
 
@@ -170,6 +174,32 @@ ValueListenableBuilder<FlutterBarcodeScannerViewState>(
 | `switchCamera([lens])` | Switches to the requested lens or toggles when omitted. |
 | `updateConfig(config, autoPauseOnScan, widgetConfig)` | Applies updated native and widget configuration. |
 | `dispose()` | Releases native resources and closes streams. |
+
+## Permissions
+
+### `FlutterBarcodePermissionStatus`
+
+| Value | Meaning | Platforms |
+| --- | --- | --- |
+| `granted` | Camera access is available. | both |
+| `denied` | Refused, but asking again can still prompt. | Android only |
+| `permanentlyDenied` | Refused; only Settings can grant it now. | both |
+| `restricted` | A device policy forbids the camera; the user cannot change it. | iOS only |
+| `notDetermined` | Not requested yet. | both |
+
+| Getter | Description |
+| --- | --- |
+| `isGranted` | Whether the camera can be used. |
+| `canRequest` | Whether requesting again can still show a prompt (`notDetermined` or `denied`). |
+| `requiresSettings` | Whether only a settings change can grant access (`permanentlyDenied` or `restricted`). |
+
+Two asymmetries are real and deliberate:
+
+- **iOS never reports `denied`.** It prompts once per install, so a refusal is already final and
+  is reported as `permanentlyDenied`.
+- **`notDetermined` on Android is inferred.** Android cannot distinguish "never asked" from
+  "permanently denied", so the plugin records whether it has asked. Clearing app data resets that
+  record, and a permission requested elsewhere in the app is not seen by it.
 
 ## Validation
 

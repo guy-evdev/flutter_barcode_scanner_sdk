@@ -5,7 +5,9 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -27,6 +29,8 @@ class FlutterBarcodeScannerSdkPlugin :
         private const val SCANNER_VIEW_TYPE = "flutter_barcode_scanner_sdk/scanner_view"
         private const val REQUEST_SCAN = 41012
         private const val REQUEST_PERMISSION = 41013
+        private const val PREFS = "flutter_barcode_scanner_sdk"
+        private const val KEY_REQUESTED_CAMERA = "has_requested_camera_permission"
     }
 
     private lateinit var applicationContext: Context
@@ -85,7 +89,9 @@ class FlutterBarcodeScannerSdkPlugin :
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "scan" -> handleScan(call, result)
+            "checkCameraPermission" -> result.success(cameraPermissionStatus())
             "requestCameraPermission" -> handlePermissionRequest(result)
+            "openAppSettings" -> result.success(openAppSettings())
             else -> result.notImplemented()
         }
     }
@@ -116,15 +122,76 @@ class FlutterBarcodeScannerSdkPlugin :
     private fun handlePermissionRequest(result: MethodChannel.Result) {
         val hostActivity = activity
         if (hostActivity == null) {
-            result.success(false)
+            result.success(CameraPermissionStatus.DENIED)
             return
         }
-        if (hasCameraPermission(hostActivity)) {
-            result.success(true)
+        val status = cameraPermissionStatus()
+        // Asking again when the system will not prompt would hang the caller on
+        // a dialog that never appears, so report the terminal status instead.
+        if (status != CameraPermissionStatus.GRANTED &&
+            status != CameraPermissionStatus.PERMANENTLY_DENIED
+        ) {
+            pendingPermissionResults += result
+            markCameraPermissionRequested()
+            requestCameraPermissionIfNeeded(hostActivity)
             return
         }
-        pendingPermissionResults += result
-        requestCameraPermissionIfNeeded(hostActivity)
+        result.success(status)
+    }
+
+    /**
+     * The permission status reported to Dart.
+     *
+     * Falls back to the raw grant check when no activity is attached, because
+     * `shouldShowRequestPermissionRationale` needs one.
+     */
+    private fun cameraPermissionStatus(): String {
+        val context = activity ?: applicationContext
+        val granted = hasCameraPermission(context)
+        val hostActivity = activity
+        if (granted) {
+            return CameraPermissionStatus.GRANTED
+        }
+        if (hostActivity == null) {
+            return CameraPermissionStatus.DENIED
+        }
+        return CameraPermissionStatus.resolve(
+            isGranted = false,
+            hasRequestedBefore = hasRequestedCameraPermission(),
+            shouldShowRationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                hostActivity,
+                Manifest.permission.CAMERA,
+            ),
+        )
+    }
+
+    private fun hasRequestedCameraPermission(): Boolean {
+        return applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getBoolean(KEY_REQUESTED_CAMERA, false)
+    }
+
+    private fun markCameraPermissionRequested() {
+        applicationContext
+            .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_REQUESTED_CAMERA, true)
+            .apply()
+    }
+
+    private fun openAppSettings(): Boolean {
+        val hostActivity = activity ?: return false
+        return try {
+            hostActivity.startActivity(
+                Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", hostActivity.packageName, null),
+                ),
+            )
+            true
+        } catch (error: RuntimeException) {
+            false
+        }
     }
 
     private fun launchScanner(hostActivity: Activity, config: ScannerConfig) {
@@ -174,10 +241,11 @@ class FlutterBarcodeScannerSdkPlugin :
             cameraPermissionIndex < grantResults.size &&
             grantResults[cameraPermissionIndex] == PackageManager.PERMISSION_GRANTED
 
+        val status = cameraPermissionStatus()
         val permissionResults = pendingPermissionResults.toList()
         pendingPermissionResults.clear()
         permissionResults.forEach { permissionResult ->
-            permissionResult.success(granted)
+            permissionResult.success(status)
         }
 
         val hostActivity = activity

@@ -129,6 +129,73 @@ enum FlutterBarcodeScannerResultType {
   error,
 }
 
+/// Camera permission state, as reported by the platform.
+///
+/// Android and iOS cannot report the same set of states, and the differences
+/// are load-bearing rather than cosmetic:
+///
+/// - **[restricted] is iOS-only.** It means a policy such as Screen Time or MDM
+///   forbids camera access, and the user cannot grant it themselves. Android
+///   never reports it.
+/// - **[denied] is effectively Android-only.** iOS shows its permission prompt
+///   exactly once, so a denial there is already final and is reported as
+///   [permanentlyDenied].
+/// - **[notDetermined] on Android is inferred**, not read from the system.
+///   Android cannot distinguish "never asked" from "denied permanently", so the
+///   plugin records whether it has asked before. Clearing app data resets that
+///   record, and a permission requested by other code in the same app is not
+///   seen by it.
+enum FlutterBarcodePermissionStatus {
+  /// Camera access is available.
+  granted,
+
+  /// Access was refused, but asking again can still show the system prompt.
+  ///
+  /// Android only — see the notes on this enum.
+  denied,
+
+  /// Access was refused and the system will not prompt again.
+  ///
+  /// Only a change in Settings can grant it. Use
+  /// [FlutterBarcodeScanner.openAppSettings].
+  permanentlyDenied,
+
+  /// A device policy forbids camera access and the user cannot change it.
+  ///
+  /// iOS only — see the notes on this enum.
+  restricted,
+
+  /// Access has not been requested yet.
+  notDetermined;
+
+  /// Whether the camera can be used.
+  bool get isGranted => this == FlutterBarcodePermissionStatus.granted;
+
+  /// Whether requesting again can still show the system prompt.
+  ///
+  /// `false` means asking again is a no-op and the user has to go to Settings.
+  bool get canRequest =>
+      this == FlutterBarcodePermissionStatus.notDetermined ||
+      this == FlutterBarcodePermissionStatus.denied;
+
+  /// Whether granting access now requires a trip to the system settings.
+  bool get requiresSettings =>
+      this == FlutterBarcodePermissionStatus.permanentlyDenied ||
+      this == FlutterBarcodePermissionStatus.restricted;
+
+  /// Parses a native status string.
+  ///
+  /// An unrecognized value maps to [denied] rather than [granted], so a native
+  /// change this package version does not know about can never be mistaken for
+  /// permission the user did not give.
+  static FlutterBarcodePermissionStatus fromNativeValue(String? value) {
+    return FlutterBarcodePermissionStatus.values.firstWhere(
+      (status) => status.name == value,
+      orElse: () => FlutterBarcodePermissionStatus.denied,
+    );
+  }
+}
+
 /// The camera lens to use for initial or requested camera selection.
 enum BarcodeCameraLens {
   /// Rear-facing camera.
@@ -248,6 +315,12 @@ class FlutterBarcodeScannerStrings {
     this.switchCamera = 'Switch camera',
     this.cameraPermissionRequired = 'Camera permission is required',
     this.cameraUnavailable = 'Camera unavailable',
+    this.permissionRetry = 'Allow camera access',
+    this.permissionOpenSettings = 'Open settings',
+    this.cameraPermissionPermanentlyDenied =
+        'Camera access is turned off for this app. Enable it in Settings.',
+    this.cameraPermissionRestricted =
+        'Camera access is not allowed on this device.',
   });
 
   /// Full-screen scanner title.
@@ -271,6 +344,26 @@ class FlutterBarcodeScannerStrings {
   /// Message shown when a camera cannot be opened.
   final String cameraUnavailable;
 
+  /// Label of the button that re-requests camera permission.
+  ///
+  /// Flutter-side only; the native full-screen scanner does not show it.
+  final String permissionRetry;
+
+  /// Label of the button that opens the system settings for this app.
+  ///
+  /// Flutter-side only; the native full-screen scanner does not show it.
+  final String permissionOpenSettings;
+
+  /// Shown when permission was refused and the system will not prompt again.
+  ///
+  /// Flutter-side only.
+  final String cameraPermissionPermanentlyDenied;
+
+  /// Shown when a device policy forbids camera access. iOS only in practice.
+  ///
+  /// Flutter-side only.
+  final String cameraPermissionRestricted;
+
   /// Returns a copy with selected strings replaced.
   FlutterBarcodeScannerStrings copyWith({
     String? title,
@@ -280,6 +373,10 @@ class FlutterBarcodeScannerStrings {
     String? switchCamera,
     String? cameraPermissionRequired,
     String? cameraUnavailable,
+    String? permissionRetry,
+    String? permissionOpenSettings,
+    String? cameraPermissionPermanentlyDenied,
+    String? cameraPermissionRestricted,
   }) {
     return FlutterBarcodeScannerStrings(
       title: title ?? this.title,
@@ -290,6 +387,14 @@ class FlutterBarcodeScannerStrings {
       cameraPermissionRequired:
           cameraPermissionRequired ?? this.cameraPermissionRequired,
       cameraUnavailable: cameraUnavailable ?? this.cameraUnavailable,
+      permissionRetry: permissionRetry ?? this.permissionRetry,
+      permissionOpenSettings:
+          permissionOpenSettings ?? this.permissionOpenSettings,
+      cameraPermissionPermanentlyDenied:
+          cameraPermissionPermanentlyDenied ??
+          this.cameraPermissionPermanentlyDenied,
+      cameraPermissionRestricted:
+          cameraPermissionRestricted ?? this.cameraPermissionRestricted,
     );
   }
 
@@ -319,7 +424,12 @@ class FlutterBarcodeScannerStrings {
         other.flashOff == flashOff &&
         other.switchCamera == switchCamera &&
         other.cameraPermissionRequired == cameraPermissionRequired &&
-        other.cameraUnavailable == cameraUnavailable;
+        other.cameraUnavailable == cameraUnavailable &&
+        other.permissionRetry == permissionRetry &&
+        other.permissionOpenSettings == permissionOpenSettings &&
+        other.cameraPermissionPermanentlyDenied ==
+            cameraPermissionPermanentlyDenied &&
+        other.cameraPermissionRestricted == cameraPermissionRestricted;
   }
 
   @override
@@ -331,6 +441,10 @@ class FlutterBarcodeScannerStrings {
     switchCamera,
     cameraPermissionRequired,
     cameraUnavailable,
+    permissionRetry,
+    permissionOpenSettings,
+    cameraPermissionPermanentlyDenied,
+    cameraPermissionRestricted,
   );
 }
 
@@ -558,12 +672,10 @@ class ScanDecision {
   final String? message;
 
   /// Whether this decision accepted the scan.
-  bool get isAccepted =>
-      outcome == FlutterBarcodeScanDecisionOutcome.accepted;
+  bool get isAccepted => outcome == FlutterBarcodeScanDecisionOutcome.accepted;
 
   /// Whether this decision rejected the scan.
-  bool get isRejected =>
-      outcome == FlutterBarcodeScanDecisionOutcome.rejected;
+  bool get isRejected => outcome == FlutterBarcodeScanDecisionOutcome.rejected;
 
   @override
   bool operator ==(Object other) {

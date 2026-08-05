@@ -157,7 +157,7 @@ void main() {
           .setMockMethodCallHandler(channel, (call) async {
             calls.add(call);
             if (call.method == 'requestCameraPermission') {
-              return true;
+              return 'granted';
             }
             return <String, Object?>{
               'type': 'barcode',
@@ -170,7 +170,10 @@ void main() {
             .setMockMethodCallHandler(channel, null);
       });
 
-      expect(await FlutterBarcodeScanner.requestCameraPermission(), isTrue);
+      expect(
+        await FlutterBarcodeScanner.requestCameraPermission(),
+        FlutterBarcodePermissionStatus.granted,
+      );
       final result = await FlutterBarcodeScanner.scan(
         FlutterBarcodeScannerConfig(
           allowedFormats: FlutterBarcodeScannerFormats.qrOnly,
@@ -876,7 +879,10 @@ void main() {
       tester,
     ) async {
       final gate = Completer<ScanDecision>();
-      final controller = await pumpScanner(tester, validate: (_) => gate.future);
+      final controller = await pumpScanner(
+        tester,
+        validate: (_) => gate.future,
+      );
 
       await emitBarcode('CODE-10');
       await tester.pump();
@@ -1155,6 +1161,94 @@ void main() {
         contains('SystemSound.play'),
       );
       await tester.pump(const Duration(seconds: 1));
+    });
+  });
+
+  group('permission contract', () {
+    test('status parses native values', () {
+      expect(
+        FlutterBarcodePermissionStatus.fromNativeValue('granted'),
+        FlutterBarcodePermissionStatus.granted,
+      );
+      expect(
+        FlutterBarcodePermissionStatus.fromNativeValue('permanentlyDenied'),
+        FlutterBarcodePermissionStatus.permanentlyDenied,
+      );
+      expect(
+        FlutterBarcodePermissionStatus.fromNativeValue('restricted'),
+        FlutterBarcodePermissionStatus.restricted,
+      );
+      expect(
+        FlutterBarcodePermissionStatus.fromNativeValue('notDetermined'),
+        FlutterBarcodePermissionStatus.notDetermined,
+      );
+    });
+
+    test('an unknown native value is never mistaken for granted', () {
+      expect(
+        FlutterBarcodePermissionStatus.fromNativeValue('somethingNew'),
+        FlutterBarcodePermissionStatus.denied,
+      );
+      expect(
+        FlutterBarcodePermissionStatus.fromNativeValue(null),
+        FlutterBarcodePermissionStatus.denied,
+      );
+    });
+
+    test('canRequest is true only where a prompt can still appear', () {
+      expect(FlutterBarcodePermissionStatus.notDetermined.canRequest, isTrue);
+      expect(FlutterBarcodePermissionStatus.denied.canRequest, isTrue);
+      expect(
+        FlutterBarcodePermissionStatus.permanentlyDenied.canRequest,
+        isFalse,
+      );
+      expect(FlutterBarcodePermissionStatus.restricted.canRequest, isFalse);
+      expect(FlutterBarcodePermissionStatus.granted.canRequest, isFalse);
+    });
+
+    test('requiresSettings marks the states the user cannot fix in-app', () {
+      expect(
+        FlutterBarcodePermissionStatus.permanentlyDenied.requiresSettings,
+        isTrue,
+      );
+      expect(
+        FlutterBarcodePermissionStatus.restricted.requiresSettings,
+        isTrue,
+      );
+      expect(FlutterBarcodePermissionStatus.denied.requiresSettings, isFalse);
+      expect(FlutterBarcodePermissionStatus.granted.isGranted, isTrue);
+    });
+
+    test('the static API speaks the status contract', () async {
+      const channel = MethodChannel('flutter_barcode_scanner_sdk/methods');
+      final calls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            calls.add(call);
+            if (call.method == 'openAppSettings') {
+              return true;
+            }
+            return 'permanentlyDenied';
+          });
+      addTearDown(() {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, null);
+      });
+
+      expect(
+        await FlutterBarcodeScanner.checkCameraPermission(),
+        FlutterBarcodePermissionStatus.permanentlyDenied,
+      );
+      expect(
+        await FlutterBarcodeScanner.requestCameraPermission(),
+        FlutterBarcodePermissionStatus.permanentlyDenied,
+      );
+      expect(await FlutterBarcodeScanner.openAppSettings(), isTrue);
+      expect(calls.map((call) => call.method), [
+        'checkCameraPermission',
+        'requestCameraPermission',
+        'openAppSettings',
+      ]);
     });
   });
 }

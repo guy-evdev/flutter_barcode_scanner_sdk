@@ -558,3 +558,65 @@ enum ScannerCamera {
         ]
     }
 }
+
+/// Maps `AVAuthorizationStatus` onto the Dart permission contract.
+///
+/// iOS reports its own state directly, unlike Android, but two mappings are
+/// deliberate rather than mechanical:
+///
+/// - `.denied` becomes `permanentlyDenied`. iOS shows the camera prompt exactly
+///   once per install, so a refusal is already final — reporting plain `denied`
+///   would invite callers to ask again and silently do nothing.
+/// - `restricted` has no Android equivalent. It means a policy such as Screen
+///   Time or MDM forbids the camera, and even Settings will not help.
+enum ScannerPermission {
+    static let granted = "granted"
+    static let permanentlyDenied = "permanentlyDenied"
+    static let restricted = "restricted"
+    static let notDetermined = "notDetermined"
+
+    /// Maps a raw authorization status. Separated for testability.
+    static func status(for authorization: AVAuthorizationStatus) -> String {
+        switch authorization {
+        case .authorized: return granted
+        case .notDetermined: return notDetermined
+        case .restricted: return restricted
+        case .denied: return permanentlyDenied
+        @unknown default: return permanentlyDenied
+        }
+    }
+
+    /// The current status, without prompting.
+    static func currentStatus() -> String {
+        status(for: AVCaptureDevice.authorizationStatus(for: .video))
+    }
+
+    /// Requests access, prompting only when the system still would.
+    static func request(_ completion: @escaping (String) -> Void) {
+        let current = AVCaptureDevice.authorizationStatus(for: .video)
+        guard current == .notDetermined else {
+            completion(status(for: current))
+            return
+        }
+        AVCaptureDevice.requestAccess(for: .video) { _ in
+            DispatchQueue.main.async {
+                completion(currentStatus())
+            }
+        }
+    }
+
+    /// Opens this app's page in Settings.
+    static func openAppSettings(_ completion: @escaping (Bool) -> Void) {
+        guard let url = URL(string: UIApplication.openSettingsURLString),
+              UIApplication.shared.canOpenURL(url)
+        else {
+            completion(false)
+            return
+        }
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:]) { opened in
+                completion(opened)
+            }
+        }
+    }
+}
