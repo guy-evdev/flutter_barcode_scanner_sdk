@@ -25,7 +25,7 @@ pausing, the feedback and the resume:
 
 ```dart
 FlutterBarcodeScannerView(
-  config: const FlutterBarcodeScannerConfig(
+  config: FlutterBarcodeScannerConfig(
     allowedFormats: FlutterBarcodeScannerFormats.common,
   ),
   widgetConfig: const FlutterBarcodeScannerWidgetConfig(
@@ -202,7 +202,7 @@ Replace that UI with `permissionBuilder`:
 
 ```dart
 FlutterBarcodeScannerView(
-  config: const FlutterBarcodeScannerConfig(),
+  config: FlutterBarcodeScannerConfig(),
   permissionBuilder: (context, status, retry) => Center(
     child: Column(
       mainAxisSize: MainAxisSize.min,

@@ -11,6 +11,137 @@ not listed are drop-in.
 
 ## 0.3.0
 
+### The scan window is a `Rect`, and the hidden square rule is gone
+
+`widthFactor` and `heightFactor` are replaced by a single `rect` in normalized preview
+coordinates — each side a fraction of the preview, because the preview size is not known when a
+config is built.
+
+```dart
+// Before
+const FlutterBarcodeScannerScanWindow(
+  widthFactor: 0.9,
+  heightFactor: 0.35,
+);
+
+// After
+const FlutterBarcodeScannerScanWindow(
+  rect: Rect.fromLTWH(0.05, 0.325, 0.9, 0.35),
+);
+```
+
+**Read this even if you never set the window.** Before 0.3.0, equal factors silently collapsed
+the window to a square at `min(width, height)`. The old `0.58 / 0.58` default was therefore a
+square at 58% of the *preview height* on a portrait phone — not the wide band it read as. The
+rule is gone and the default is now `Rect.fromLTWH(0.1, 0.3, 0.8, 0.4)`, a band 80% wide and 40%
+tall. **The framed region changes shape on upgrade whether or not you touched the config.**
+
+`FlutterBarcodeScannerScanWindow.fromFactors` keeps old call sites compiling for one release,
+but it is source-compatible only — it does **not** reproduce the square rule, because that rule
+needed a preview size the config never had:
+
+```dart
+// Compiles, but 0.8/0.8 is now a true rectangle rather than a square
+// ignore: deprecated_member_use
+final window = FlutterBarcodeScannerScanWindow.fromFactors(
+  widthFactor: 0.8,
+  heightFactor: 0.8,
+);
+```
+
+`effectiveWidthFactor` and `effectiveHeightFactor` are replaced by `effectiveRect`, and
+`resolve(Size)` maps the window onto a concrete preview size.
+
+### `requestCameraPermission()` returns a status, not a bool
+
+Camera permission has five states, and collapsing them into `true`/`false` made the denied case
+a dead end — there was no way to tell "ask again" from "only Settings can fix this".
+
+```dart
+// Before
+if (await FlutterBarcodeScanner.requestCameraPermission()) {
+  startScanning();
+}
+
+// After
+final status = await FlutterBarcodeScanner.requestCameraPermission();
+if (status.isGranted) {
+  startScanning();
+} else if (status.requiresSettings) {
+  await FlutterBarcodeScanner.openAppSettings();
+}
+```
+
+`checkCameraPermission()` reports the status without prompting. See
+[RECIPES.md](RECIPES.md#camera-permission) for the platform differences — iOS never reports
+`denied`, and Android's `notDetermined` is inferred.
+
+### `freezePreviewWhenPaused` is removed
+
+Deprecated as a no-op in 0.2.1, now deleted along with its method-channel key. Delete the
+argument; there is no replacement, because the preview already stays live while detection is
+paused.
+
+```dart
+// Before
+widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+  freezePreviewWhenPaused: true,
+  pausedScanWindowBorderColor: Color(0xFFE53935),
+),
+
+// After
+widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+  pausedScanWindowBorderColor: Color(0xFFE53935),
+),
+```
+
+### Repeated scans of the same code are suppressed by default
+
+`duplicateScanCooldown` defaults to 250 ms. A camera re-decodes the code in front of it many
+times a second, so one physical barcode used to produce a burst of identical results. Only
+repeats of the **same value** are filtered — a different code is still reported immediately.
+
+If you were de-duplicating in your own `onScan`, that code is now redundant. If you genuinely
+want every decode, opt out:
+
+```dart
+const FlutterBarcodeScannerWidgetConfig(
+  duplicateScanCooldown: Duration.zero,
+);
+```
+
+### Multiple codes in frame: the nearest one wins
+
+When several barcodes are visible, the scanner used to take the first one the platform happened
+to report whose centre fell inside the window — an order unrelated to what the user was aiming
+at, so a dense sheet could silently return the neighbouring code. Candidates are now ranked by
+distance from the scan-window centre, and a code whose bounds merely *intersect* the window is
+eligible rather than requiring its centre inside.
+
+No code change is needed. Expect a different — and more often correct — result when more than
+one code is in frame.
+
+### The camera no longer stops on `AppLifecycleState.inactive`
+
+Teardown keys on `paused`, `hidden` and `detached` only. On iOS, `inactive` fires for
+notification banners, Control Center and the app switcher, and each one cost a full camera stop
+and rebind. If you relied on the camera releasing during a banner, stop it explicitly:
+
+```dart
+controller.stopCamera();
+```
+
+### The default scanner title changed
+
+`FlutterBarcodeScannerStrings.title` now defaults to `'Scan Barcode'` instead of `'Scan Ticket'`.
+The package decodes barcodes and has no idea what they represent, so the default no longer
+assumes. If you never set `title`, the heading in the native full-screen scanner changes text.
+Set it explicitly to keep the old wording:
+
+```dart
+strings: const FlutterBarcodeScannerStrings(title: 'Scan Ticket'),
+```
+
 ### `FlutterBarcodeScannerConfig` is no longer `const`-constructible
 
 The configuration now rejects `FlutterBarcodeScannerFormat.unknown` at construction rather than

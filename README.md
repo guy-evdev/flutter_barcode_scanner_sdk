@@ -102,22 +102,10 @@ FlutterBarcodeScannerView(
   controller: controller,
   config: FlutterBarcodeScannerConfig(
     allowedFormats: FlutterBarcodeScannerFormats.qrOnly,
-    scanWindow: FlutterBarcodeScannerScanWindow(
-      enabled: true,
-      widthFactor: 0.58,
-      heightFactor: 0.58,
-    ),
   ),
-  widgetConfig: const FlutterBarcodeScannerWidgetConfig(
-    autoRequestCameraPermission: true,
-    showPauseResumeButton: true,
-  ),
-  autoStart: true,
-  autoPauseOnScan: true,
   onScan: (result) {
     if (result.isBarcode) {
-      // Process the result, then resume when ready for another scan.
-      controller.resumeDetection();
+      debugPrint(result.rawValue);
     }
   },
 );
@@ -125,23 +113,25 @@ FlutterBarcodeScannerView(
 
 ### Validate each scan
 
-For entry scanning, return a decision instead of resuming by hand. The scanner holds
-detection while your check runs, shows accepted or rejected feedback, and resumes itself:
+Scanning one code after another is a loop: detect, check it, move on. Return a decision and
+the scanner runs that loop for you — holding detection while your check runs, showing accepted
+or rejected feedback, then resuming:
 
 ```dart
 FlutterBarcodeScannerView(
-  config: const FlutterBarcodeScannerConfig(),
+  config: FlutterBarcodeScannerConfig(),
   onScanValidate: (result) async {
     final check = await api.validate(result.rawValue);
     return check.isValid
-        ? const ScanDecision.accept(message: 'Admitted')
-        : const ScanDecision.reject(message: 'Already used');
+        ? const ScanDecision.accept(message: 'Accepted')
+        : const ScanDecision.reject(message: 'Rejected');
   },
 );
 ```
 
 A slow or failing check cannot double-scan or wedge the scanner. See
-[RECIPES.md](RECIPES.md#continuous-entry-scanning) for the details.
+[RECIPES.md](RECIPES.md#continuous-entry-scanning) for the guarantees, and for driving
+pause/resume yourself instead.
 
 Controller actions:
 
@@ -174,7 +164,7 @@ The bundled [example app](example) demonstrates:
 - Flash and camera switching
 - Auto-start, auto-pause, and pause/resume behavior
 - App bar, status bar, overlay, and format preset options
-- A stress harness for sustained-scanning runs, in the app bar
+- A stress harness for sustained-scanning runs, and a mount/unmount cycler, in the app bar
 
 Run it with:
 
