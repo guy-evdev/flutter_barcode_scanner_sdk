@@ -39,6 +39,7 @@ This reference summarizes the public Dart API for `flutter_barcode_scanner_sdk`.
 | `appBarBackgroundColor` | `Color?` | `null` | Full-screen scanner app bar background. |
 | `appBarForegroundColor` | `Color?` | `null` | Full-screen scanner app bar foreground. |
 | `overlayColor` | `Color` | `Color(0x99000000)` | Mask color outside the scan window. |
+| `scanConfirmationFrames` | `int` | `2` | Consecutive observations of the same value required before a scan is reported. Clamped to `1...10`; `1` reports the first observation. Doubled automatically while more than one barcode overlaps the scan window. |
 
 Requesting `FlutterBarcodeScannerFormat.unknown` in `allowedFormats` fails an assert at
 construction — it is the label reported for a symbology the package does not recognise, never a
@@ -55,7 +56,7 @@ from the same values compare equal and can be used as map keys or compared in `d
 `allowedFormats` compares as an unordered set.
 
 Scan windows compare the values **as written**, not the clamped `effective*` values: two windows
-whose out-of-range factors happen to clamp to the same result are not equal.
+whose out-of-range values happen to clamp to the same result are not equal.
 
 ### `FlutterBarcodeScannerStrings`
 
@@ -74,19 +75,44 @@ whose out-of-range factors happen to clamp to the same result are not equal.
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | `bool` | `true` | Limits detection to the scan window. `false` scans the whole preview. |
-| `rect` | `Rect` | `Rect.fromLTWH(0.1, 0.3, 0.8, 0.4)` | The window in normalized preview coordinates, each side a fraction in `0.0...1.0`. |
+| `widthFraction` | `double` | `0.8` | Share of the preview width the window spans. Clamped to `0.05...1.0`. Ignored when `rect` is set. |
+| `aspectRatio` | `double` | `3 / 2` | Window width divided by height. Clamped to `0.2...5.0`. Ignored when `rect` is set. |
+| `rect` | `Rect?` | `null` | Explicit window in normalized preview coordinates. Overrides `widthFraction` and `aspectRatio`. |
 | `cornerRadius` | `double` | `18` | Scan-window overlay corner radius. |
+| `aimMode` | `FlutterBarcodeScanAimMode` | `crosshair` | How a barcode has to line up with the window to be reported. |
 
 | Member | Returns | Description |
 | --- | --- | --- |
-| `effectiveRect` | `Rect` | `rect` clamped into the preview and guaranteed to have area. Non-finite or zero-area values fall back to the default. |
-| `resolve(Size)` | `Rect?` | The window against a concrete preview size, or `null` when disabled. |
-| `FlutterBarcodeScannerScanWindow.fromFactors(...)` | — | **Deprecated, removed in 0.4.0.** Kept so pre-0.3.0 code compiles. Equal factors no longer collapse to a square. |
+| `resolve(Size)` | `Rect?` | The window against a concrete preview size, in preview pixels, or `null` when disabled. |
+| `effectiveWidthFraction` | `double` | `widthFraction` clamped. |
+| `effectiveAspectRatio` | `double` | `aspectRatio` clamped; non-finite values fall back to the default. |
+| `effectiveRect` | `Rect?` | `rect` clamped into the preview, or `null` when no explicit rect is set. |
+| `copyWith(clearRect: true)` | `FlutterBarcodeScannerScanWindow` | Drops an explicit `rect` and returns to aspect-ratio sizing. |
+| `FlutterBarcodeScannerScanWindow.fromFactors(...)` | — | **Deprecated, removed in 0.4.0.** Kept so pre-0.3.0 code compiles; produces a `rect` window. |
 
-The rect is clamped rather than rejected: values outside `0.0...1.0` are pulled inside the
-preview, and a zero-area or non-finite rect falls back to the default. The clamped rect is what
-goes over the method channel, so the Flutter overlay and both native scanners frame the same
-region.
+The window is centred, `widthFraction` of the preview wide and that width divided by
+`aspectRatio` tall, shrunk to fit — never taller than 90% of the preview — while keeping its
+shape. Sizing on one axis plus a ratio is what makes the window the same shape in an embedded
+preview and in the full-screen scanner; fractions on both axes made its shape follow whatever it
+was drawn in.
+
+Values are clamped rather than rejected. The sizing rule is what goes over the method channel,
+not a resolved rect: the preview is not measured until it is laid out natively. The Dart, Kotlin
+and Swift layers each resolve it, and each has a unit test asserting the same numbers.
+
+### `FlutterBarcodeScanAimMode`
+
+| Value | A barcode qualifies when | Use it for |
+| --- | --- | --- |
+| `crosshair` (default) | its own bounds contain the window's centre | anything where more than one code can be in frame |
+| `window` | its bounds overlap the scan window | one code at a time; forgiving, no precise aiming |
+
+Both modes rank the qualifying candidates by distance from the window's centre and report the
+nearest. Under `crosshair` the built-in overlay draws a crosshair at the centre on both
+platforms. With the window disabled, both fall back to the centre of the preview.
+
+`crosshair` is the default because it is the only rule that cannot report a barcode the user was
+not pointing at — see [RECIPES.md](RECIPES.md#aim-mode).
 
 ### `FlutterBarcodeScannerUiConfig`
 

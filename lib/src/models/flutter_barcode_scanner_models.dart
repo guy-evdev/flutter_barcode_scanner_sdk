@@ -448,19 +448,70 @@ class FlutterBarcodeScannerStrings {
   );
 }
 
+/// How a decoded barcode has to line up with the scan window to be reported.
+///
+/// Both modes rank surviving candidates by distance from the window's centre
+/// and report the nearest, so a frame containing several codes still resolves
+/// to one answer. They differ in which codes get that far.
+enum FlutterBarcodeScanAimMode {
+  /// A barcode qualifies when its bounds overlap the scan window.
+  ///
+  /// Forgiving: anything visibly inside the frame counts, so the user holds a
+  /// code roughly in the box rather than aiming precisely. Faster to acquire,
+  /// and safe when **only one barcode is ever in frame**.
+  ///
+  /// Do not use it for sheets, shelves or labels printed side by side. The
+  /// scanner can only rank the barcodes the platform decoded, and iOS decodes
+  /// an unpredictable subset of what is visible — so the code you are aiming at
+  /// may not be among them, and a neighbour that was decoded wins instead. That
+  /// is a wrong result, not a slow one.
+  window,
+
+  /// A barcode qualifies only when its own bounds contain the window's centre.
+  ///
+  /// The default, because it is the only rule that cannot report a barcode the
+  /// user was not pointing at. Aiming becomes a point rather than an area: a
+  /// neighbouring code can sit well inside the window and still lose, because
+  /// the centre is not on it. The built-in overlay draws a crosshair at that
+  /// point on both platforms, so the target is visible.
+  ///
+  /// The cost is acquisition time — the user must put the crosshair on the code
+  /// — and on iOS an extra wait while the platform gets round to decoding it.
+  /// Choose [window] only when a single barcode is ever in frame.
+  crosshair;
+
+  /// The identifier sent to the platform channel.
+  String get nativeValue => name;
+}
+
 /// Region-of-interest configuration for barcode detection.
+///
+/// The window is described as a fraction of the preview's **width** plus an
+/// [aspectRatio], rather than as a fraction of both axes. A fraction on each
+/// axis makes the window's shape depend on the shape of whatever it is drawn
+/// in: the same `0.8 × 0.4` config rendered as a 2.2:1 band inside a short
+/// embedded preview and as a 1:1 square in the full-screen scanner. Fixing the
+/// aspect ratio makes the window the same shape everywhere and lets only its
+/// scale follow the preview.
 @immutable
 class FlutterBarcodeScannerScanWindow {
-  /// Creates a scan window from a rect in normalized preview coordinates.
+  /// Creates a scan window sized from the preview width and an aspect ratio.
   ///
-  /// [rect] is expressed as fractions of the preview, so `Rect.fromLTWH(0.1,
-  /// 0.3, 0.8, 0.4)` is a band 80% of the preview wide and 40% tall, centered.
-  /// The preview size is not known when the config is built, which is why the
-  /// rect is relative rather than in logical pixels.
+  /// The window is centred, [widthFraction] of the preview wide, and
+  /// `width / aspectRatio` tall. It is shrunk to fit when that height would
+  /// not fit the preview, keeping the aspect ratio.
+  ///
+  /// Pass [rect] to place the window explicitly instead, in normalized preview
+  /// coordinates. That brings back the shape-follows-container behaviour
+  /// described on this class, so use it when you want the window pinned to a
+  /// region of the preview rather than centred.
   const FlutterBarcodeScannerScanWindow({
     this.enabled = true,
-    this.rect = defaultRect,
+    this.widthFraction = defaultWidthFraction,
+    this.aspectRatio = defaultAspectRatio,
+    this.rect,
     this.cornerRadius = 18,
+    this.aimMode = FlutterBarcodeScanAimMode.crosshair,
   });
 
   /// Creates a scan window from width and height factors.
@@ -472,8 +523,9 @@ class FlutterBarcodeScannerScanWindow {
   /// wide band it read as. That rule is gone, so equal factors now produce a
   /// true rectangle. Pass [rect] directly to say exactly what you mean.
   @Deprecated(
-    'Use the default constructor with a rect. Equal factors no longer collapse '
-    'to a square. This constructor is removed in 0.4.0.',
+    'Use the default constructor. Sizing is now widthFraction plus '
+    'aspectRatio, so the window keeps its shape on every preview. This '
+    'constructor is removed in 0.4.0.',
   )
   factory FlutterBarcodeScannerScanWindow.fromFactors({
     bool enabled = true,
@@ -481,7 +533,7 @@ class FlutterBarcodeScannerScanWindow {
     double heightFactor = 0.58,
     double cornerRadius = 18,
   }) {
-    final width = _clampFraction(widthFactor, fallback: 0.8);
+    final width = _clampFraction(widthFactor, fallback: defaultWidthFraction);
     final height = _clampFraction(heightFactor, fallback: 0.4);
     return FlutterBarcodeScannerScanWindow(
       enabled: enabled,
@@ -490,38 +542,87 @@ class FlutterBarcodeScannerScanWindow {
     );
   }
 
-  /// The window used when none is given: a centered band, 80% by 40%.
+  /// The share of the preview width the window spans when none is given.
+  static const double defaultWidthFraction = 0.8;
+
+  /// The width-to-height ratio used when none is given: 3:2.
   ///
-  /// Wider than tall because the formats that most need a window are the long
-  /// linear ones; a square default is the shape that made them hard to frame.
-  static const Rect defaultRect = Rect.fromLTWH(0.1, 0.3, 0.8, 0.4);
+  /// Wide enough that a linear code spans it comfortably, tall enough that a
+  /// QR code is not squeezed. A window near 1:1 is the shape that made a dense
+  /// sheet ambiguous, because several codes fit inside it at once.
+  static const double defaultAspectRatio = 3 / 2;
+
+  /// The largest share of the preview height the window may occupy.
+  ///
+  /// Only reached on a preview short enough that [aspectRatio] cannot be
+  /// honoured at the requested width; the window shrinks rather than losing its
+  /// shape.
+  static const double maxHeightFraction = 0.9;
 
   /// Whether detection is limited to the scan window.
   ///
-  /// When `false`, the whole native preview is scanned.
+  /// When `false`, the whole native preview is scanned and candidates are
+  /// ranked from the centre of the preview instead.
   final bool enabled;
 
-  /// The window in normalized preview coordinates, each side in `0.0...1.0`.
-  final Rect rect;
+  /// The share of the preview width the window spans, in `0.05...1.0`.
+  ///
+  /// Ignored when [rect] is set.
+  final double widthFraction;
+
+  /// The window's width divided by its height, in `0.2...5.0`.
+  ///
+  /// Values above 1 are wider than tall. Ignored when [rect] is set.
+  final double aspectRatio;
+
+  /// An explicit window in normalized preview coordinates, or `null`.
+  ///
+  /// Overrides [widthFraction] and [aspectRatio] when set. Each side is a
+  /// fraction of the preview, so the window's shape follows the preview's —
+  /// which is the behaviour the aspect-ratio sizing exists to avoid. Set it
+  /// only when the window has to sit somewhere other than the centre.
+  final Rect? rect;
 
   /// Corner radius, in logical pixels, for the scan-window overlay.
   final double cornerRadius;
 
-  /// [rect] clamped into the preview and guaranteed to have a usable area.
+  /// How a barcode has to line up with the window to be reported.
   ///
-  /// Non-finite or inverted values fall back to [defaultRect] rather than
-  /// producing a window nothing can ever be detected inside.
-  Rect get effectiveRect {
-    if (!rect.left.isFinite ||
-        !rect.top.isFinite ||
-        !rect.width.isFinite ||
-        !rect.height.isFinite) {
-      return defaultRect;
+  /// Defaults to [FlutterBarcodeScanAimMode.crosshair], which is the only mode
+  /// that cannot return a barcode the user was not pointing at.
+  final FlutterBarcodeScanAimMode aimMode;
+
+  /// [widthFraction] clamped into a usable range.
+  double get effectiveWidthFraction =>
+      _clampFraction(widthFraction, fallback: defaultWidthFraction);
+
+  /// [aspectRatio] clamped into a usable range.
+  double get effectiveAspectRatio {
+    if (!aspectRatio.isFinite || aspectRatio <= 0) {
+      return defaultAspectRatio;
     }
-    final width = _clampFraction(rect.width, fallback: defaultRect.width);
-    final height = _clampFraction(rect.height, fallback: defaultRect.height);
-    final left = rect.left.clamp(0.0, 1.0 - width).toDouble();
-    final top = rect.top.clamp(0.0, 1.0 - height).toDouble();
+    return aspectRatio.clamp(0.2, 5.0).toDouble();
+  }
+
+  /// [rect] clamped into the preview, or `null` when no explicit rect is set.
+  ///
+  /// Non-finite or inverted values fall back to a centred window of the default
+  /// proportions rather than producing a window nothing can be detected inside.
+  Rect? get effectiveRect {
+    final value = rect;
+    if (value == null) {
+      return null;
+    }
+    if (!value.left.isFinite ||
+        !value.top.isFinite ||
+        !value.width.isFinite ||
+        !value.height.isFinite) {
+      return null;
+    }
+    final width = _clampFraction(value.width, fallback: defaultWidthFraction);
+    final height = _clampFraction(value.height, fallback: 0.4);
+    final left = value.left.clamp(0.0, 1.0 - width).toDouble();
+    final top = value.top.clamp(0.0, 1.0 - height).toDouble();
     return Rect.fromLTWH(left, top, width, height);
   }
 
@@ -533,48 +634,91 @@ class FlutterBarcodeScannerScanWindow {
     return cornerRadius < 0 ? 0 : cornerRadius;
   }
 
-  /// Resolves the window against a concrete preview size.
+  /// Resolves the window against a concrete preview size, in preview pixels.
   ///
   /// Returns `null` when the window is disabled or the size is degenerate.
+  ///
+  /// This is the one definition of the geometry. The Kotlin and Swift layers
+  /// reimplement it against their own preview sizes — the preview is not
+  /// measured until it is laid out natively, so the config cannot carry a
+  /// resolved rect — and each has a unit test asserting the same numbers.
   Rect? resolve(Size size) {
     if (!enabled || size.width <= 0 || size.height <= 0) {
       return null;
     }
     final fraction = effectiveRect;
-    return Rect.fromLTWH(
-      fraction.left * size.width,
-      fraction.top * size.height,
-      fraction.width * size.width,
-      fraction.height * size.height,
+    if (fraction != null) {
+      return Rect.fromLTWH(
+        fraction.left * size.width,
+        fraction.top * size.height,
+        fraction.width * size.width,
+        fraction.height * size.height,
+      );
+    }
+    final ratio = effectiveAspectRatio;
+    var width = effectiveWidthFraction * size.width;
+    var height = width / ratio;
+    final maxHeight = size.height * maxHeightFraction;
+    if (height > maxHeight) {
+      height = maxHeight;
+      width = height * ratio;
+    }
+    if (width > size.width) {
+      width = size.width;
+      height = width / ratio;
+    }
+    return Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: width,
+      height: height,
     );
   }
 
   /// Returns a copy with selected values replaced.
+  ///
+  /// Pass `clearRect: true` to drop an explicit [rect] and go back to
+  /// [widthFraction] / [aspectRatio] sizing; passing `rect: null` cannot
+  /// express that, because it is indistinguishable from omitting the argument.
   FlutterBarcodeScannerScanWindow copyWith({
     bool? enabled,
+    double? widthFraction,
+    double? aspectRatio,
     Rect? rect,
+    bool clearRect = false,
     double? cornerRadius,
+    FlutterBarcodeScanAimMode? aimMode,
   }) {
     return FlutterBarcodeScannerScanWindow(
       enabled: enabled ?? this.enabled,
-      rect: rect ?? this.rect,
+      widthFraction: widthFraction ?? this.widthFraction,
+      aspectRatio: aspectRatio ?? this.aspectRatio,
+      rect: clearRect ? null : rect ?? this.rect,
       cornerRadius: cornerRadius ?? this.cornerRadius,
+      aimMode: aimMode ?? this.aimMode,
     );
   }
 
   /// Converts the scan window into the method-channel payload map.
   ///
-  /// Sends the clamped rect, so all three layers frame the same region without
-  /// each re-deriving it.
+  /// Sends the clamped values, so no layer re-derives a bound the others do
+  /// not share. `rect` is `null` unless an explicit one was set.
   Map<String, Object?> toMap() {
     final fraction = effectiveRect;
     return {
       'enabled': enabled,
-      'left': fraction.left,
-      'top': fraction.top,
-      'width': fraction.width,
-      'height': fraction.height,
+      'widthFraction': effectiveWidthFraction,
+      'aspectRatio': effectiveAspectRatio,
+      'maxHeightFraction': maxHeightFraction,
       'cornerRadius': effectiveCornerRadius,
+      'aimMode': aimMode.nativeValue,
+      'rect': fraction == null
+          ? null
+          : {
+              'left': fraction.left,
+              'top': fraction.top,
+              'width': fraction.width,
+              'height': fraction.height,
+            },
     };
   }
 
@@ -593,12 +737,22 @@ class FlutterBarcodeScannerScanWindow {
     }
     return other is FlutterBarcodeScannerScanWindow &&
         other.enabled == enabled &&
+        other.widthFraction == widthFraction &&
+        other.aspectRatio == aspectRatio &&
         other.rect == rect &&
-        other.cornerRadius == cornerRadius;
+        other.cornerRadius == cornerRadius &&
+        other.aimMode == aimMode;
   }
 
   @override
-  int get hashCode => Object.hash(enabled, rect, cornerRadius);
+  int get hashCode => Object.hash(
+    enabled,
+    widthFraction,
+    aspectRatio,
+    rect,
+    cornerRadius,
+    aimMode,
+  );
 
   /// Clamps a fraction into a usable slice of the preview.
   ///
@@ -970,6 +1124,7 @@ class FlutterBarcodeScannerConfig {
     this.appBarBackgroundColor,
     this.appBarForegroundColor,
     this.overlayColor = const Color(0x99000000),
+    this.scanConfirmationFrames = defaultScanConfirmationFrames,
   }) : assert(
          !allowedFormats.contains(FlutterBarcodeScannerFormat.unknown),
          'FlutterBarcodeScannerFormat.unknown cannot be requested. It is the '
@@ -1011,6 +1166,34 @@ class FlutterBarcodeScannerConfig {
   /// Overlay color outside the scan window.
   final Color overlayColor;
 
+  /// How many consecutive observations must agree before a scan is reported.
+  ///
+  /// A camera decodes many times a second, so the first code to touch the scan
+  /// window wins — even when the phone is still sweeping towards the one the
+  /// user meant. Requiring the same value to stay the best candidate for a few
+  /// observations in a row discards those, because a code caught in passing
+  /// does not stay selected. This is the detector-side recommendation for
+  /// video: act on a consecutive series of the same value, not a single frame.
+  ///
+  /// `1` reports the first observation, which is the pre-0.3.0 behaviour.
+  /// Clamped to `1...10`. Each extra observation costs roughly one frame of
+  /// latency.
+  ///
+  /// **What an observation is differs by platform.** On Android it is an
+  /// analyzer frame, delivered continuously whether or not anything decodes.
+  /// On iOS it is an `AVCaptureMetadataOutput` callback, which only fires when
+  /// something *is* decoded. Both discard progress once nothing has been seen
+  /// for a moment, so a code re-entering the frame is never confirmed by
+  /// observations made before the user looked away.
+  final int scanConfirmationFrames;
+
+  /// The confirmation count used when none is given.
+  static const int defaultScanConfirmationFrames = 2;
+
+  /// [scanConfirmationFrames] clamped into the supported range.
+  int get effectiveScanConfirmationFrames =>
+      scanConfirmationFrames.clamp(1, 10);
+
   /// Returns a copy with selected values replaced.
   FlutterBarcodeScannerConfig copyWith({
     Set<FlutterBarcodeScannerFormat>? allowedFormats,
@@ -1026,6 +1209,7 @@ class FlutterBarcodeScannerConfig {
     Color? appBarForegroundColor,
     bool clearAppBarForegroundColor = false,
     Color? overlayColor,
+    int? scanConfirmationFrames,
   }) {
     return FlutterBarcodeScannerConfig(
       allowedFormats: allowedFormats ?? this.allowedFormats,
@@ -1044,6 +1228,8 @@ class FlutterBarcodeScannerConfig {
           ? null
           : appBarForegroundColor ?? this.appBarForegroundColor,
       overlayColor: overlayColor ?? this.overlayColor,
+      scanConfirmationFrames:
+          scanConfirmationFrames ?? this.scanConfirmationFrames,
     );
   }
 
@@ -1075,6 +1261,7 @@ class FlutterBarcodeScannerConfig {
       'appBarBackgroundColor': appBarBackgroundColor?.toARGB32(),
       'appBarForegroundColor': appBarForegroundColor?.toARGB32(),
       'overlayColor': overlayColor.toARGB32(),
+      'scanConfirmationFrames': effectiveScanConfirmationFrames,
     };
   }
 
@@ -1100,7 +1287,8 @@ class FlutterBarcodeScannerConfig {
         other.appBarTransparent == appBarTransparent &&
         other.appBarBackgroundColor == appBarBackgroundColor &&
         other.appBarForegroundColor == appBarForegroundColor &&
-        other.overlayColor == overlayColor;
+        other.overlayColor == overlayColor &&
+        other.scanConfirmationFrames == scanConfirmationFrames;
   }
 
   @override
@@ -1115,6 +1303,7 @@ class FlutterBarcodeScannerConfig {
     appBarBackgroundColor,
     appBarForegroundColor,
     overlayColor,
+    scanConfirmationFrames,
   );
 }
 

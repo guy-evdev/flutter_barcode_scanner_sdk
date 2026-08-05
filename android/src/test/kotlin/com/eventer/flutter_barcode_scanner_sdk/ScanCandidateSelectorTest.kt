@@ -11,8 +11,20 @@ internal class ScanCandidateSelectorTest {
     private val frameCenterX = 400f
     private val frameCenterY = 400f
 
-    private fun select(candidates: List<Bounds?>, window: Bounds? = this.window): Int? =
-        ScanCandidateSelector.selectNearest(candidates, window, frameCenterX, frameCenterY)
+    private fun select(
+        candidates: List<Bounds?>,
+        window: Bounds? = this.window,
+        crosshair: Boolean = false,
+        aimRadius: Float = 0f,
+    ): Int? =
+        ScanCandidateSelector.selectNearest(
+            candidates,
+            window,
+            frameCenterX,
+            frameCenterY,
+            requireCenterOnCandidate = crosshair,
+            aimRadius = aimRadius,
+        )
 
     // B21 — detector order must not decide the result.
 
@@ -145,5 +157,74 @@ internal class ScanCandidateSelectorTest {
         )
 
         assertNull(select(candidates))
+    }
+
+    // Crosshair aiming — the barcode must contain the aim point, not merely overlap the window.
+
+    /// The dense-sheet case. A neighbour can sit entirely inside the window and still lose,
+    /// because the aim point is not on it.
+    @Test
+    fun crosshairRejectsANeighbourInsideTheWindow() {
+        val neighbour = Bounds(220f, 220f, 300f, 260f)
+
+        assertEquals(0, select(listOf(neighbour)))
+        assertNull(select(listOf(neighbour), crosshair = true))
+    }
+
+    @Test
+    fun crosshairAcceptsTheCodeUnderTheAimPoint() {
+        val underAim = Bounds(360f, 380f, 440f, 420f)
+
+        assertEquals(0, select(listOf(underAim), crosshair = true))
+    }
+
+    @Test
+    fun crosshairPicksTheOneUnderTheAimPointNotTheNearest() {
+        val nearMiss = Bounds(300f, 380f, 340f, 420f)
+        val underAim = Bounds(360f, 380f, 440f, 420f)
+
+        assertEquals(1, select(listOf(nearMiss, underAim), crosshair = true))
+    }
+
+    @Test
+    fun crosshairFallsBackToThePreviewCentreWithoutAWindow() {
+        val elsewhere = Bounds(20f, 20f, 100f, 60f)
+        val underCentre = Bounds(360f, 360f, 440f, 440f)
+
+        assertEquals(1, select(listOf(elsewhere, underCentre), window = null, crosshair = true))
+    }
+
+    @Test
+    fun crosshairNeverAcceptsAnUnpositionedCandidate() {
+        assertEquals(0, select(listOf(null), window = null))
+        assertNull(select(listOf(null), window = null, crosshair = true))
+    }
+
+    /**
+     * A bare point was too brittle: detectors report partial and wobbling bounds, so a code
+     * sitting visibly under the crosshair could be unscannable however carefully the user aimed.
+     */
+    @Test
+    fun crosshairToleratesBoundsThatMissTheExactCentre() {
+        // Reported bounds cover only part of the code and stop 10px short of the anchor.
+        val partial = Bounds(300f, 380f, 390f, 420f)
+
+        assertNull(select(listOf(partial), crosshair = true))
+        assertEquals(0, select(listOf(partial), crosshair = true, aimRadius = 24f))
+    }
+
+    @Test
+    fun theAimRegionIsStillTooSmallForANeighbour() {
+        // Stacked codes on a sheet sit far enough apart that the region cannot reach the next one.
+        val neighbour = Bounds(220f, 220f, 300f, 260f)
+
+        assertNull(select(listOf(neighbour), crosshair = true, aimRadius = 24f))
+    }
+
+    @Test
+    fun theAimRadiusIsClampedToASensibleRange() {
+        assertEquals(8f, ScanCandidateSelector.aimRadius(10f))
+        assertEquals(48f, ScanCandidateSelector.aimRadius(10_000f))
+        assertEquals(11.58f, ScanCandidateSelector.aimRadius(193f), 0.01f)
     }
 }

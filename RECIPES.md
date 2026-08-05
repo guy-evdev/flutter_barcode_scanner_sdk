@@ -13,6 +13,11 @@ the two common flows; everything here is the long tail.
 - [Camera permission](#camera-permission)
 - [Custom overlays](#custom-overlays)
 - [Scan-window geometry](#scan-window-geometry)
+  - [Placing the window explicitly](#placing-the-window-explicitly)
+- [Picking the right barcode](#picking-the-right-barcode)
+  - [Aim mode](#aim-mode)
+  - [Confirmation observations](#confirmation-observations)
+- [Scanning a sheet of barcodes](#scanning-a-sheet-of-barcodes)
 - [Choosing formats](#choosing-formats)
 - [Platform differences](#platform-differences)
 - [Measuring sustained scanning](#measuring-sustained-scanning)
@@ -265,33 +270,117 @@ button that `showPauseResumeButton` adds. Drive `controller.pauseDetection()` an
 
 ## Scan-window geometry
 
-`scanWindow.rect` is a `Rect` in normalized preview coordinates — each side a fraction of the
-preview, not logical pixels, because the preview size is not known when the config is built.
+The window is a share of the preview **width** at a fixed aspect ratio. It is centred, and it is
+the same shape wherever it is drawn — only its scale follows the preview.
 
 ```dart
 const FlutterBarcodeScannerScanWindow(
-  rect: Rect.fromLTWH(0.05, 0.35, 0.9, 0.3), // wide band for long linear codes
+  widthFraction: 0.9,
+  aspectRatio: 4,   // a wide, shallow band for long linear codes
 );
 ```
 
-The default is `Rect.fromLTWH(0.1, 0.3, 0.8, 0.4)` — a centered band, wider than tall, because
-the formats that most need a window are the long linear ones.
+The default is `widthFraction: 0.8` at `aspectRatio: 3 / 2` — wide enough for a linear code,
+tall enough that a QR is not squeezed.
 
-Read the applied geometry back with `effectiveRect` (clamped into the preview, guaranteed to
-have area) or `resolve(size)`, which maps it onto a concrete preview size and returns `null`
-when the window is disabled.
+**Why not a fraction on each axis.** Fractions on both axes make the window's shape depend on the
+shape of whatever it is drawn in. One `0.8 × 0.4` config rendered as a 2.2:1 band inside a short
+embedded preview and as a 1:1 square in the full-screen scanner — the same configuration, two
+different windows. Fixing the aspect ratio removes that.
 
-**The old square rule is gone.** Before 0.3.0, equal width and height factors silently collapsed
-the window to a square at `min(width, height)`, so the `0.58 / 0.58` default was a narrow box on
-a portrait phone rather than the wide band it read as. `FlutterBarcodeScannerScanWindow.fromFactors`
-still exists for one release so old code compiles, but it no longer applies that rule — equal
-factors now give a true rectangle.
+On a preview too short for the requested height, the window shrinks rather than changing shape,
+down to 90% of the preview height.
 
-Detection is not clipped to the window on either platform. The full frame is decoded and the
-result is then rejected unless the barcode's centre falls inside the window, because
-pre-clipping made long 1D codes fail to decode at the edges.
+Read the applied geometry back with `resolve(size)`, which maps the window onto a concrete
+preview size in pixels and returns `null` when the window is disabled.
 
 To scan the whole preview, set `enabled: false`.
+
+### Placing the window explicitly
+
+Pass `rect` when the window has to sit somewhere other than the centre. It is a `Rect` in
+normalized preview coordinates — each side a fraction of the preview, not logical pixels, because
+the preview size is not known when the config is built.
+
+```dart
+const FlutterBarcodeScannerScanWindow(
+  rect: Rect.fromLTWH(0.05, 0.1, 0.9, 0.3), // pinned near the top
+);
+```
+
+`rect` overrides `widthFraction` and `aspectRatio`, and brings back the shape-follows-container
+behaviour above, so reach for it only when centring is genuinely wrong. `copyWith(clearRect: true)`
+drops it again.
+
+## Picking the right barcode
+
+Detection is never clipped to the scan window on either platform: the full frame is decoded and
+the window decides which result is *reported*. Pre-clipping made long 1D codes fail to decode at
+the edges.
+
+Two settings control that decision.
+
+### Aim mode
+
+```dart
+const FlutterBarcodeScannerScanWindow(
+  aimMode: FlutterBarcodeScanAimMode.window, // looser than the default
+);
+```
+
+| Mode | A barcode qualifies when | Use it for |
+| --- | --- | --- |
+| `crosshair` (default) | its own bounds reach a small region at the window's centre | anything where more than one code can be in frame |
+| `window` | its bounds overlap the window | a single code at a time; faster, no precise aiming |
+
+Both rank the surviving candidates by distance from the window's centre and report the nearest.
+The built-in overlay draws a crosshair at that centre under `crosshair`, on both platforms, so the
+user can see what they are aiming at.
+
+The aim target is a small **region**, not a single pixel — roughly 6% of the window's shorter side.
+Detectors report partial and wobbling bounds, so a code sitting visibly under the crosshair whose
+reported bounds happened to miss the exact centre point would otherwise be unscannable however
+carefully the user aimed. The region is still far smaller than the gap between stacked codes, so a
+neighbour cannot reach it.
+
+**Why the strict mode is the default.** With several codes in frame, `window` mode reports
+whichever qualifying code is nearest the centre — and "nearest" can still be a neighbour when your
+aim is between two codes, which on a label sheet it often is. `crosshair` cannot do that: a
+neighbour does not cover the aim point, so it is rejected and the scanner keeps looking. A wrong
+code is worse than a slower one when the result is being validated.
+
+Choose `window` when a single barcode is ever in frame — a ticket held up, a label on a parcel.
+It acquires faster and forgives sloppy aim.
+
+With the scan window disabled, both modes fall back to the centre of the preview.
+
+### Confirmation observations
+
+```dart
+final config = FlutterBarcodeScannerConfig(scanConfirmationFrames: 3);
+```
+
+A camera decodes many times a second, so the first code to satisfy the window wins — even when
+the phone is still sweeping towards the one the user meant. `scanConfirmationFrames` requires the
+same value to stay the best candidate for that many observations in a row before it is reported.
+A code caught in passing does not survive that.
+
+Defaults to `2`. `1` reports the first observation, which is the pre-0.3.0 behaviour. Clamped to
+`1...10`, and each extra observation costs roughly one frame of latency.
+
+**A short gap does not break the run.** Frames that decode nothing are routine — on iOS especially
+— so progress survives them. It is discarded only after about half a second without any
+observation, which is what separates a gap of a few frames from the user looking away.
+
+**Under `window` aiming, several codes in the window double the requirement.** That is the mode
+where a hasty result can be the wrong one, so the extra observations give the user a moment to
+centre the code they meant. Under `crosshair` the requirement is not doubled: a neighbour is
+already unreportable, so the longer run would only add latency.
+
+**An "observation" is a detector pass on both platforms** — a CameraX analyzer frame on Android,
+a Vision request on iOS — and neither is tied to the camera's frame rate. Both discard a run in
+progress once nothing has been seen for about half a second, so looking away and back never
+continues an earlier run.
 
 ## Choosing formats
 
@@ -311,14 +400,31 @@ FlutterBarcodeScannerConfig(
 package version does not recognize survives to your code with `nativeFormat` intact instead of
 being reported as some other format. Passing it throws.
 
+## Scanning a sheet of barcodes
+
+Scanning one code from a page, shelf or label sheet where several are visible at once works the
+same way on both platforms: the detector reports every barcode in the frame, and the scanner
+reports the one under your aim point.
+
+That parity is recent. Through 0.2.x, iOS used `AVCaptureMetadataOutput`, which
+[Apple documents](https://developer.apple.com/library/archive/technotes/tn2325/_index.html) as
+returning only a **single** 1D barcode per frame — "the center-most decodable barcode in the
+`rectOfInterest`" — so the scanner never saw a list to choose from, and a dense sheet could return
+a neighbouring code. iOS now decodes with Vision, which returns them all.
+
+Two settings matter most here, both covered above: keep the default
+[`crosshair` aim mode](#aim-mode) so only the code under the aim point can be reported, and leave
+the [scan window](#scan-window-geometry) enabled so detection is spent on the region you are
+pointing at rather than the whole camera frame.
+
 ## Platform differences
 
 These are real asymmetries, not implementation details you can ignore.
 
 | Area | Android | iOS |
 | --- | --- | --- |
-| Engine | CameraX + ML Kit | AVFoundation metadata output |
-| UPC-A vs EAN-13 | ML Kit filters them separately | AVFoundation reports both as `.ean13`; the plugin post-filters on the decoded value |
+| Engine | CameraX + ML Kit | AVFoundation capture + Vision (`VNDetectBarcodesRequest`) |
+| UPC-A vs EAN-13 | ML Kit filters them separately | Vision reports both as `.ean13`; the plugin labels them from the decoded value |
 | Unsupported format set | ML Kit accepts every supported format | Reports `UNSUPPORTED_FORMATS` when the device offers none of them |
 | Session interruption | Not observable | `SESSION_INTERRUPTED` / auto-recovery, see [Handling errors](#handling-errors) |
 | Zero-size preview | Retries, then `PREVIEW_UNAVAILABLE` | No equivalent report |
@@ -326,7 +432,7 @@ These are real asymmetries, not implementation details you can ignore.
 | Permission `restricted` | Never reported | Reported when a device policy forbids the camera |
 | Permission `notDetermined` | Inferred from a recorded "have we asked" flag | Read directly from `AVAuthorizationStatus` |
 
-**UPC-A and EAN-13 need care on iOS.** AVFoundation cannot distinguish them, so the plugin
+**UPC-A and EAN-13 need care on iOS.** Vision cannot distinguish them, so the plugin
 decides from the decoded value: a 13-digit value with a leading zero is reported as `UPC_A`,
 anything else as `EAN_13`. Results are then filtered against what you asked for. The practical
 consequence is that **requesting one without the other on iOS will skip codes** — if you scan

@@ -446,6 +446,9 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
                     cornerRadius:
                         widget.config.scanWindow.effectiveCornerRadius,
                     borderColor: _scanWindowBorderColor,
+                    showCrosshair:
+                        widget.config.scanWindow.aimMode ==
+                        FlutterBarcodeScanAimMode.crosshair,
                   ),
                 ),
               ),
@@ -964,12 +967,19 @@ class _ScannerOverlayPainter extends CustomPainter {
     required this.overlayColor,
     required this.cornerRadius,
     required this.borderColor,
+    required this.showCrosshair,
   });
 
   final Rect? scanWindow;
   final Color overlayColor;
   final double cornerRadius;
   final Color borderColor;
+
+  /// Whether to mark the aim point, drawn under crosshair aiming.
+  ///
+  /// Without it the mode changes what gets scanned with nothing on screen to
+  /// explain why a code inside the frame was ignored.
+  final bool showCrosshair;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -996,6 +1006,38 @@ class _ScannerOverlayPainter extends CustomPainter {
       RRect.fromRectAndRadius(window, Radius.circular(cornerRadius)),
       borderPaint,
     );
+
+    if (showCrosshair) {
+      const arm = 12.0;
+      const gap = 4.0;
+      final centre = window.center;
+      final crosshairPaint = Paint()
+        ..color = borderColor
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.round;
+      canvas
+        ..drawLine(
+          centre.translate(-arm, 0),
+          centre.translate(-gap, 0),
+          crosshairPaint,
+        )
+        ..drawLine(
+          centre.translate(gap, 0),
+          centre.translate(arm, 0),
+          crosshairPaint,
+        )
+        ..drawLine(
+          centre.translate(0, -arm),
+          centre.translate(0, -gap),
+          crosshairPaint,
+        )
+        ..drawLine(
+          centre.translate(0, gap),
+          centre.translate(0, arm),
+          crosshairPaint,
+        );
+    }
   }
 
   @override
@@ -1003,7 +1045,8 @@ class _ScannerOverlayPainter extends CustomPainter {
     return oldDelegate.scanWindow != scanWindow ||
         oldDelegate.overlayColor != overlayColor ||
         oldDelegate.cornerRadius != cornerRadius ||
-        oldDelegate.borderColor != borderColor;
+        oldDelegate.borderColor != borderColor ||
+        oldDelegate.showCrosshair != showCrosshair;
   }
 }
 

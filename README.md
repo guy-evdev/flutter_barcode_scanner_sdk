@@ -10,13 +10,13 @@ The package provides two native scanning modes:
 - `FlutterBarcodeScanner.scan(config)` opens a full-screen scanner and returns one result.
 - `FlutterBarcodeScannerView` embeds the native scanner in a Flutter layout and emits results through a controller-friendly widget API.
 
-Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iOS plugin supports Swift Package Manager and CocoaPods.
+Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation capture with Apple's Vision framework for decoding. The iOS plugin supports Swift Package Manager and CocoaPods.
 
 ## When to use this package
 
 - **Decoding happens on-device.** No network call is made, and no barcode data leaves the phone.
 - **No Google Play services requirement.** Android decoding uses the bundled ML Kit barcode model, so it works on devices without Play services.
-- **Native decode paths on both platforms** — CameraX with ML Kit on Android, AVFoundation metadata output on iOS — rather than a single cross-platform decoder.
+- **Native decode paths on both platforms** — CameraX with ML Kit on Android, Vision on iOS — rather than a single cross-platform decoder. Both report every barcode in a frame, so the scanner picks the one you aimed at rather than the first one the platform happened to return.
 - **Both embedded and full-screen modes** ship from one package and share their configuration.
 - **Built for sustained scanning**, where a shift means thousands of scans: detection pauses without rebinding the camera, and the example app ships a soak harness that reports memory, dropped frames, and decode latency.
 - **Not a fit if** you need web or desktop support, or barcode generation. This package is Android and iOS, scanning only.
@@ -42,7 +42,7 @@ Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iO
 | Platform | Minimum | Native engine |
 | --- | --- | --- |
 | Android | API 24 | CameraX + ML Kit Barcode Scanning |
-| iOS | 15.0 | AVFoundation metadata scanning |
+| iOS | 15.0 | AVFoundation capture, Vision decoding |
 | Flutter | 3.44.0 | AGP 9 / Gradle 9 Android plugin build |
 | Dart | 3.12.0 | Sound null safety |
 
@@ -159,12 +159,11 @@ Available presets include `all`, `common`, `oneDimensional`, `twoDimensional`, a
 The bundled [example app](example) demonstrates:
 
 - Full-screen and embedded scanner modes
-- Scan-window and whole-preview detection
-- RTL/LTR strings
-- Flash and camera switching
-- Auto-start, auto-pause, and pause/resume behavior
-- App bar, status bar, overlay, and format preset options
-- A stress harness for sustained-scanning runs, and a mount/unmount cycler, in the app bar
+- The scan → validate → accept/reject loop, with an adjustable decision delay
+- The camera-permission states and the route to Settings
+- Scan-window shape, aim mode, and confirmation observations
+- RTL/LTR strings, flash, camera switching, and the chrome options
+- Four measurement harnesses, including a dense-sheet accuracy run
 
 Run it with:
 
@@ -176,8 +175,8 @@ flutter run
 ## Recipes
 
 See [RECIPES.md](RECIPES.md) for the continuous entry-scanning loop, custom overlays,
-scan-window geometry, error codes, and the platform differences between the Android and iOS
-engines.
+scan-window geometry, picking the right barcode when several are in frame, error codes, and the
+platform differences between the Android and iOS engines.
 
 ## API Reference
 
@@ -201,6 +200,7 @@ See [MIGRATION.md](MIGRATION.md) for the code changes each release needs, newest
 | Permission screen does not appear | Confirm camera permission is in the Android manifest or `NSCameraUsageDescription` is in `Info.plist`. |
 | Embedded scanner stays black | Ensure the widget has non-zero size and the controller has not been disposed. |
 | No barcode is detected | Try `scanWindow.enabled = false`, verify lighting/focus, and restrict `allowedFormats` only when the expected format is known. |
+| The wrong barcode is scanned from a sheet | Set `aimMode: FlutterBarcodeScanAimMode.crosshair`, shrink the window with `widthFraction`, or raise `scanConfirmationFrames`. See [RECIPES.md](RECIPES.md#picking-the-right-barcode). |
 | iOS build integration issue | Use Flutter 3.44 or newer and keep Swift Package Manager enabled; CocoaPods remains supported through the podspec. |
 
 ## License

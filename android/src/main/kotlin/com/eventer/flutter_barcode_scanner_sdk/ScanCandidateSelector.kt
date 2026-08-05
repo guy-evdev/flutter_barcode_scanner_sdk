@@ -15,10 +15,28 @@ import kotlin.math.sqrt
  * point to be inside the window rejected codes that visibly sat within the overlay, which is why
  * repositioning the camera eventually worked — the user was hunting for the centre to land.
  *
+ * [requireCenterOnCandidate] inverts that test rather than restoring it: the *candidate* must
+ * contain the window's centre, so aiming is a point instead of an area. That is what makes a
+ * dense sheet selectable, and it is why the crosshair mode is opt-in — it is unforgiving of shake
+ * and slower to acquire when only one code is ever in frame.
+ *
  * Geometry only: values, formats and detector state are the caller's to filter first. Deliberately
  * free of Android framework types so it is covered by JVM unit tests.
  */
 internal object ScanCandidateSelector {
+    /**
+     * Half-width of the crosshair aim region, as a share of the scan window's shorter side.
+     *
+     * Sized to sit inside the gap between stacked barcodes — on a typical sheet the codes are
+     * roughly twice their own height apart — so it forgives a wobbling or partial bounds report
+     * without ever letting a neighbouring code qualify.
+     */
+    const val AIM_RADIUS_FRACTION = 0.06f
+
+    /** The aim radius in view pixels for a window of [shorterSide] pixels. */
+    fun aimRadius(shorterSide: Float): Float =
+        (shorterSide * AIM_RADIUS_FRACTION).coerceIn(8f, 48f)
+
     /** An axis-aligned rectangle in view coordinates. */
     data class Bounds(
         val left: Float,
@@ -35,6 +53,11 @@ internal object ScanCandidateSelector {
         /** Whether the two rectangles share any area. Touching edges do not overlap. */
         fun overlaps(other: Bounds): Boolean =
             left < other.right && other.left < right && top < other.bottom && other.top < bottom
+
+        /** Whether this rectangle reaches a square of half-width [radius] centred on the point. */
+        fun reaches(x: Float, y: Float, radius: Float): Boolean =
+            left <= x + radius && right >= x - radius &&
+                top <= y + radius && bottom >= y - radius
     }
 
     /**
@@ -49,12 +72,22 @@ internal object ScanCandidateSelector {
      *   better answer than whichever result the detector happened to list first.
      * @param frameCenterX horizontal centre of the preview, used only when [window] is null.
      * @param frameCenterY vertical centre of the preview, used only when [window] is null.
+     * @param requireCenterOnCandidate when true a candidate qualifies only if its own bounds reach
+     *   the aim region — a square of half-width [aimRadius] around the window's centre, or the
+     *   preview's when there is no window.
+     * @param aimRadius half-width of that aim region. A region rather than a bare point because
+     *   detectors report partial or wobbling bounds: a code sitting visibly under the crosshair
+     *   whose reported bounds miss the exact centre pixel would otherwise be unscannable no matter
+     *   how carefully the user aimed. Small enough to sit inside the gap between adjacent codes,
+     *   so a neighbour still cannot qualify.
      */
     fun selectNearest(
         candidates: List<Bounds?>,
         window: Bounds?,
         frameCenterX: Float,
         frameCenterY: Float,
+        requireCenterOnCandidate: Boolean = false,
+        aimRadius: Float = 0f,
     ): Int? {
         val anchorX = window?.centerX ?: frameCenterX
         val anchorY = window?.centerY ?: frameCenterY
@@ -64,13 +97,18 @@ internal object ScanCandidateSelector {
         candidates.forEachIndexed { index, bounds ->
             if (bounds == null || bounds.isEmpty) {
                 // Unpositioned: only usable when there is no window to test it against, and only
-                // once nothing positioned has qualified.
-                if (window == null && bestIndex == null) {
+                // once nothing positioned has qualified. Crosshair aiming never accepts one —
+                // there is no way to show it was under the anchor.
+                if (window == null && !requireCenterOnCandidate && bestIndex == null) {
                     bestIndex = index
                 }
                 return@forEachIndexed
             }
-            if (window != null && !bounds.overlaps(window)) {
+            if (requireCenterOnCandidate) {
+                if (!bounds.reaches(anchorX, anchorY, aimRadius)) {
+                    return@forEachIndexed
+                }
+            } else if (window != null && !bounds.overlaps(window)) {
                 return@forEachIndexed
             }
             val dx = bounds.centerX - anchorX

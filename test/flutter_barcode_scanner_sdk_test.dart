@@ -34,8 +34,10 @@ void main() {
     expect(map['allowedFormats'], isEmpty);
     expect((map['strings'] as Map)['title'], 'Barcode Scanner');
     expect((map['scanWindow'] as Map)['enabled'], isFalse);
-    expect((map['scanWindow'] as Map)['width'], 0.7);
-    expect((map['scanWindow'] as Map)['left'], 0.15);
+    expect(((map['scanWindow'] as Map)['rect'] as Map)['width'], 0.7);
+    expect(((map['scanWindow'] as Map)['rect'] as Map)['left'], 0.15);
+    expect((map['scanWindow'] as Map)['aimMode'], 'crosshair');
+    expect(map['scanConfirmationFrames'], 2);
     expect((map['uiConfig'] as Map)['initialCameraLens'], 'front');
     expect((map['uiConfig'] as Map)['initialTorchEnabled'], isTrue);
   });
@@ -134,12 +136,94 @@ void main() {
   });
 
   group('scan window geometry', () {
-    test('a non-finite rect falls back to the default', () {
+    // The same numbers are asserted by ScannerConfigTest in Kotlin and
+    // RunnerTests in Swift. Three implementations exist because the preview is
+    // not measured until it is laid out natively, so the config cannot carry a
+    // resolved rect — these tests are what keeps them from drifting.
+
+    test('the window keeps its shape across preview aspect ratios', () {
+      // The whole point: 0.8 x 0.4 fractions drew a 2.2:1 band in a short
+      // embedded preview and a 1:1 square in the full-screen scanner.
+      const window = FlutterBarcodeScannerScanWindow();
+
+      final tall = window.resolve(const Size(400, 800))!;
+      final short = window.resolve(const Size(400, 340))!;
+
+      expect(tall.width / tall.height, moreOrLessEquals(1.5));
+      expect(short.width / short.height, moreOrLessEquals(1.5));
+    });
+
+    test('the default window is centred at 80% width and 3:2', () {
+      const window = FlutterBarcodeScannerScanWindow();
+
+      final rect = window.resolve(const Size(400, 800))!;
+
+      expect(rect.width, moreOrLessEquals(320));
+      expect(rect.height, moreOrLessEquals(320 / 1.5));
+      expect(rect.center, offsetMoreOrLessEquals(const Offset(200, 400)));
+    });
+
+    test('the window shrinks rather than losing its shape', () {
+      const window = FlutterBarcodeScannerScanWindow(aspectRatio: 0.5);
+
+      final rect = window.resolve(const Size(400, 200))!;
+
+      expect(rect.height, moreOrLessEquals(180));
+      expect(rect.width, moreOrLessEquals(90));
+      expect(rect.width / rect.height, moreOrLessEquals(0.5));
+    });
+
+    test('an out-of-range width fraction is clamped', () {
+      const window = FlutterBarcodeScannerScanWindow(widthFraction: 4);
+
+      expect(window.effectiveWidthFraction, 1.0);
+    });
+
+    test('a non-finite aspect ratio falls back to the default', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        aspectRatio: double.infinity,
+      );
+
+      expect(
+        window.effectiveAspectRatio,
+        FlutterBarcodeScannerScanWindow.defaultAspectRatio,
+      );
+    });
+
+    test('an out-of-range aspect ratio is clamped', () {
+      expect(
+        const FlutterBarcodeScannerScanWindow(
+          aspectRatio: 99,
+        ).effectiveAspectRatio,
+        5.0,
+      );
+      expect(
+        const FlutterBarcodeScannerScanWindow(
+          aspectRatio: -1,
+        ).effectiveAspectRatio,
+        FlutterBarcodeScannerScanWindow.defaultAspectRatio,
+      );
+    });
+
+    test('an explicit rect overrides the aspect sizing', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0.1, 0.2, 0.8, 0.4),
+      );
+
+      expect(
+        window.resolve(const Size(400, 800)),
+        rectMoreOrLessEquals(const Rect.fromLTWH(40, 160, 320, 320)),
+      );
+    });
+
+    test('a non-finite rect is ignored rather than framing nothing', () {
       const window = FlutterBarcodeScannerScanWindow(
         rect: Rect.fromLTWH(0, 0, double.infinity, 0.4),
       );
 
-      expect(window.effectiveRect, FlutterBarcodeScannerScanWindow.defaultRect);
+      expect(window.effectiveRect, isNull);
+      // Falls back to the aspect-ratio sizing, which always has area.
+      expect(window.resolve(const Size(400, 800))!.width, greaterThan(0));
     });
 
     test('a zero-area rect cannot be produced', () {
@@ -147,8 +231,8 @@ void main() {
         rect: Rect.fromLTWH(0.2, 0.2, 0, 0),
       );
 
-      expect(window.effectiveRect.width, greaterThan(0));
-      expect(window.effectiveRect.height, greaterThan(0));
+      expect(window.effectiveRect!.width, greaterThan(0));
+      expect(window.effectiveRect!.height, greaterThan(0));
     });
 
     test('a rect is clamped to stay inside the preview', () {
@@ -156,7 +240,7 @@ void main() {
         rect: Rect.fromLTWH(0.9, 0.9, 0.5, 0.5),
       );
 
-      final rect = window.effectiveRect;
+      final rect = window.effectiveRect!;
       expect(rect.right, lessThanOrEqualTo(1.0));
       expect(rect.bottom, lessThanOrEqualTo(1.0));
     });
@@ -168,26 +252,20 @@ void main() {
       expect(window.toMap()['cornerRadius'], 0);
     });
 
-    test('resolve maps the rect onto a preview size', () {
-      const window = FlutterBarcodeScannerScanWindow(
-        rect: Rect.fromLTWH(0.1, 0.2, 0.8, 0.4),
-      );
-
-      expect(
-        window.resolve(const Size(400, 800)),
-        rectMoreOrLessEquals(const Rect.fromLTWH(40, 160, 320, 320)),
-      );
-    });
-
     test('resolve returns null when the window is disabled', () {
       const window = FlutterBarcodeScannerScanWindow(enabled: false);
 
       expect(window.resolve(const Size(400, 800)), isNull);
     });
 
-    test('equal factors no longer collapse to a square', () {
-      // B16: the old rule made 0.58/0.58 a square at min(w, h), which is why a
-      // long linear code was hard to frame in the default window.
+    test('resolve returns null for a degenerate preview', () {
+      const window = FlutterBarcodeScannerScanWindow();
+
+      expect(window.resolve(Size.zero), isNull);
+      expect(window.resolve(const Size(400, 0)), isNull);
+    });
+
+    test('the deprecated factory still produces a rect window', () {
       // ignore: deprecated_member_use_from_same_package
       final window = FlutterBarcodeScannerScanWindow.fromFactors(
         widthFactor: 0.8,
@@ -197,6 +275,119 @@ void main() {
       final rect = window.resolve(const Size(400, 800))!;
       expect(rect.width, 320);
       expect(rect.height, 640);
+    });
+
+    test('the payload carries the sizing rule, not a resolved rect', () {
+      const window = FlutterBarcodeScannerScanWindow();
+
+      final map = window.toMap();
+
+      expect(map['widthFraction'], 0.8);
+      expect(
+        map['aspectRatio'],
+        FlutterBarcodeScannerScanWindow.defaultAspectRatio,
+      );
+      expect(map['aimMode'], 'crosshair');
+      expect(map['rect'], isNull);
+    });
+
+    test('the payload carries an explicit rect when one is set', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0.1, 0.2, 0.8, 0.4),
+      );
+
+      final rect = window.toMap()['rect']! as Map<String, Object?>;
+
+      expect(rect['left'], moreOrLessEquals(0.1));
+      expect(rect['top'], moreOrLessEquals(0.2));
+      expect(rect['width'], moreOrLessEquals(0.8));
+      expect(rect['height'], moreOrLessEquals(0.4));
+    });
+
+    test('copyWith can drop an explicit rect', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0.1, 0.2, 0.8, 0.4),
+      );
+
+      expect(window.copyWith(clearRect: true).rect, isNull);
+      expect(window.copyWith().rect, window.rect);
+    });
+  });
+
+  group('scan aiming', () {
+    test('the aim mode defaults to the crosshair', () {
+      // The only rule that cannot report a barcode the user was not pointing
+      // at: a neighbour inside the window loses because the centre is not on
+      // it. iOS decodes an unpredictable subset of the visible codes, so a
+      // looser default returns the wrong code rather than a slow one.
+      expect(
+        const FlutterBarcodeScannerScanWindow().aimMode,
+        FlutterBarcodeScanAimMode.crosshair,
+      );
+      expect(
+        const FlutterBarcodeScannerScanWindow().toMap()['aimMode'],
+        'crosshair',
+      );
+    });
+
+    test('the window aim mode reaches the payload', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        aimMode: FlutterBarcodeScanAimMode.window,
+      );
+
+      expect(window.toMap()['aimMode'], 'window');
+    });
+
+    test('the aim mode participates in equality', () {
+      expect(
+        const FlutterBarcodeScannerScanWindow(),
+        isNot(
+          const FlutterBarcodeScannerScanWindow(
+            aimMode: FlutterBarcodeScanAimMode.window,
+          ),
+        ),
+      );
+    });
+  });
+
+  group('scan confirmation frames', () {
+    test('two consecutive observations are required by default', () {
+      expect(
+        FlutterBarcodeScannerConfig().scanConfirmationFrames,
+        FlutterBarcodeScannerConfig.defaultScanConfirmationFrames,
+      );
+      expect(FlutterBarcodeScannerConfig.defaultScanConfirmationFrames, 2);
+    });
+
+    test('the count is clamped into the supported range', () {
+      expect(
+        FlutterBarcodeScannerConfig(
+          scanConfirmationFrames: 0,
+        ).effectiveScanConfirmationFrames,
+        1,
+      );
+      expect(
+        FlutterBarcodeScannerConfig(
+          scanConfirmationFrames: 99,
+        ).effectiveScanConfirmationFrames,
+        10,
+      );
+    });
+
+    test('the clamped count reaches the payload', () {
+      expect(
+        FlutterBarcodeScannerConfig(
+          scanConfirmationFrames: 99,
+        ).toPlatformMap()['scanConfirmationFrames'],
+        10,
+      );
+    });
+
+    test('the count participates in equality', () {
+      expect(
+        FlutterBarcodeScannerConfig(),
+        isNot(FlutterBarcodeScannerConfig(scanConfirmationFrames: 4)),
+      );
     });
   });
 
@@ -636,7 +827,7 @@ void main() {
 
       // Tolerance rather than ==: these are computed doubles, so identical
       // geometry can still differ in the last bit.
-      expect(low.effectiveRect, rectMoreOrLessEquals(lower.effectiveRect));
+      expect(low.effectiveRect, rectMoreOrLessEquals(lower.effectiveRect!));
       expect(low, isNot(equals(lower)));
     });
   });
