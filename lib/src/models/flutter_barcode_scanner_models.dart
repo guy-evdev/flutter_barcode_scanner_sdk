@@ -629,6 +629,9 @@ class FlutterBarcodeScannerWidgetConfig {
     this.pauseTooltip = 'Pause scanner',
     this.resumeTooltip = 'Resume scanner',
     this.validationFeedbackDuration = const Duration(milliseconds: 900),
+    this.duplicateScanCooldown = const Duration(milliseconds: 250),
+    this.hapticFeedbackOnAccept = true,
+    this.soundOnAccept = false,
   });
 
   /// Whether the widget should request camera permission before creating the
@@ -675,6 +678,31 @@ class FlutterBarcodeScannerWidgetConfig {
   /// feedback at all.
   final Duration validationFeedbackDuration;
 
+  /// How long the same decoded value is ignored after it is first reported.
+  ///
+  /// Continuous scanning re-decodes a code many times a second, so without this
+  /// a single physical barcode produces a burst of identical results. Only
+  /// repeats of the *same* value are suppressed — moving to a different code is
+  /// reported immediately, which matters when scanning a dense sheet.
+  ///
+  /// Applies to barcode results only; cancellations and errors are never
+  /// filtered. Set to [Duration.zero] to report every decode.
+  final Duration duplicateScanCooldown;
+
+  /// Whether an accepted scan fires a short haptic tap.
+  ///
+  /// Only fires for `FlutterBarcodeScannerView.onScanValidate` decisions that
+  /// accept, so enabling it by default changes nothing for existing code.
+  /// Suppressed automatically when the platform reports Reduce Motion.
+  final bool hapticFeedbackOnAccept;
+
+  /// Whether an accepted scan plays the platform's short system sound.
+  ///
+  /// Off by default because an audible scanner is a deliberate choice. Uses the
+  /// system sound rather than a bundled asset, which is what makes it respect
+  /// the iOS silent switch — Flutter cannot query that switch directly.
+  final bool soundOnAccept;
+
   /// Returns a copy with selected values replaced.
   FlutterBarcodeScannerWidgetConfig copyWith({
     bool? autoRequestCameraPermission,
@@ -689,6 +717,9 @@ class FlutterBarcodeScannerWidgetConfig {
     String? pauseTooltip,
     String? resumeTooltip,
     Duration? validationFeedbackDuration,
+    Duration? duplicateScanCooldown,
+    bool? hapticFeedbackOnAccept,
+    bool? soundOnAccept,
   }) {
     return FlutterBarcodeScannerWidgetConfig(
       autoRequestCameraPermission:
@@ -708,6 +739,11 @@ class FlutterBarcodeScannerWidgetConfig {
       resumeTooltip: resumeTooltip ?? this.resumeTooltip,
       validationFeedbackDuration:
           validationFeedbackDuration ?? this.validationFeedbackDuration,
+      duplicateScanCooldown:
+          duplicateScanCooldown ?? this.duplicateScanCooldown,
+      hapticFeedbackOnAccept:
+          hapticFeedbackOnAccept ?? this.hapticFeedbackOnAccept,
+      soundOnAccept: soundOnAccept ?? this.soundOnAccept,
     );
   }
 
@@ -744,7 +780,10 @@ class FlutterBarcodeScannerWidgetConfig {
         other.pausedScanWindowBorderColor == pausedScanWindowBorderColor &&
         other.pauseTooltip == pauseTooltip &&
         other.resumeTooltip == resumeTooltip &&
-        other.validationFeedbackDuration == validationFeedbackDuration;
+        other.validationFeedbackDuration == validationFeedbackDuration &&
+        other.duplicateScanCooldown == duplicateScanCooldown &&
+        other.hapticFeedbackOnAccept == hapticFeedbackOnAccept &&
+        other.soundOnAccept == soundOnAccept;
   }
 
   @override
@@ -758,6 +797,9 @@ class FlutterBarcodeScannerWidgetConfig {
     pauseTooltip,
     resumeTooltip,
     validationFeedbackDuration,
+    duplicateScanCooldown,
+    hapticFeedbackOnAccept,
+    soundOnAccept,
   );
 }
 

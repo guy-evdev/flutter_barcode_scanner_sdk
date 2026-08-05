@@ -722,6 +722,9 @@ void main() {
             widgetConfig: FlutterBarcodeScannerWidgetConfig(
               autoRequestCameraPermission: false,
               validationFeedbackDuration: feedback,
+              // Off, so these tests prove the phase guard blocks re-entry
+              // rather than the duplicate filter silently doing it for them.
+              duplicateScanCooldown: Duration.zero,
             ),
             autoPauseOnScan: autoPauseOnScan,
             onScan: onScan,
@@ -920,6 +923,238 @@ void main() {
       expect(seen, ['CODE-12', 'CODE-13']);
 
       await tester.pump(const Duration(milliseconds: 150));
+    });
+  });
+
+  group('duplicate filtering and accept feedback', () {
+    late List<MethodCall> viewCalls;
+    late List<MethodCall> platformCalls;
+    late MethodChannel channel;
+
+    setUp(() {
+      viewCalls = <MethodCall>[];
+      platformCalls = <MethodCall>[];
+      channel = const MethodChannel(
+        'flutter_barcode_scanner_sdk/scanner_view/93',
+      );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            viewCalls.add(call);
+            return null;
+          });
+      // HapticFeedback and SystemSound both go through SystemChannels.platform.
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+            platformCalls.add(call);
+            return null;
+          });
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(SystemChannels.platform, null);
+    });
+
+    Future<void> emit(String rawValue, {String type = 'barcode'}) async {
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            channel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              MethodCall('onResult', <String, Object?>{
+                'type': type,
+                'rawValue': rawValue,
+                'format': 'CODE_128',
+              }),
+            ),
+            (_) {},
+          );
+    }
+
+    Future<List<String>> pumpScanner(
+      WidgetTester tester, {
+      FlutterBarcodeScannerWidgetConfig? widgetConfig,
+      Future<ScanDecision> Function(FlutterBarcodeScanResult)? validate,
+      bool reduceMotion = false,
+    }) async {
+      final seen = <String>[];
+      final controller = FlutterBarcodeScannerController()..attach(93);
+      addTearDown(controller.dispose);
+      Widget scanner = FlutterBarcodeScannerView(
+        controller: controller,
+        config: FlutterBarcodeScannerConfig(),
+        widgetConfig:
+            widgetConfig ??
+            const FlutterBarcodeScannerWidgetConfig(
+              autoRequestCameraPermission: false,
+            ),
+        onScan: (result) => seen.add(result.rawValue),
+        onScanValidate: validate,
+      );
+      if (reduceMotion) {
+        scanner = MediaQuery(
+          data: const MediaQueryData(disableAnimations: true),
+          child: scanner,
+        );
+      }
+      await tester.pumpWidget(MaterialApp(home: scanner));
+      return seen;
+    }
+
+    testWidgets('an immediate repeat of the same value is dropped', (
+      tester,
+    ) async {
+      final seen = await pumpScanner(tester);
+
+      await emit('CODE-A');
+      await emit('CODE-A');
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(seen, ['CODE-A']);
+    });
+
+    testWidgets('a different value is never swallowed', (tester) async {
+      final seen = await pumpScanner(tester);
+
+      await emit('CODE-A');
+      await emit('CODE-B');
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(seen, ['CODE-A', 'CODE-B', 'CODE-A']);
+    });
+
+    testWidgets('the same value is reported again after the cooldown', (
+      tester,
+    ) async {
+      final seen = await pumpScanner(
+        tester,
+        widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+          autoRequestCameraPermission: false,
+          duplicateScanCooldown: Duration(milliseconds: 40),
+        ),
+      );
+
+      await emit('CODE-A');
+      await emit('CODE-A');
+      await tester.pump(const Duration(milliseconds: 80));
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(seen, ['CODE-A', 'CODE-A']);
+    });
+
+    testWidgets('a zero cooldown reports every decode', (tester) async {
+      final seen = await pumpScanner(
+        tester,
+        widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+          autoRequestCameraPermission: false,
+          duplicateScanCooldown: Duration.zero,
+        ),
+      );
+
+      await emit('CODE-A');
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(seen, ['CODE-A', 'CODE-A']);
+    });
+
+    testWidgets('cancelled results are never filtered', (tester) async {
+      final seen = await pumpScanner(tester);
+
+      await emit('', type: 'cancelled');
+      await emit('', type: 'cancelled');
+      await tester.pump();
+
+      expect(seen, ['', '']);
+    });
+
+    testWidgets('an accepted scan fires a haptic', (tester) async {
+      await pumpScanner(
+        tester,
+        validate: (_) async => const ScanDecision.accept(),
+      );
+
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(
+        platformCalls.map((call) => call.method),
+        contains('HapticFeedback.vibrate'),
+      );
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('a rejected scan does not', (tester) async {
+      await pumpScanner(
+        tester,
+        validate: (_) async => const ScanDecision.reject(),
+      );
+
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(
+        platformCalls.map((call) => call.method),
+        isNot(contains('HapticFeedback.vibrate')),
+      );
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('Reduce Motion suppresses the haptic', (tester) async {
+      await pumpScanner(
+        tester,
+        reduceMotion: true,
+        validate: (_) async => const ScanDecision.accept(),
+      );
+
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(
+        platformCalls.map((call) => call.method),
+        isNot(contains('HapticFeedback.vibrate')),
+      );
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('the sound is off by default', (tester) async {
+      await pumpScanner(
+        tester,
+        validate: (_) async => const ScanDecision.accept(),
+      );
+
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(
+        platformCalls.map((call) => call.method),
+        isNot(contains('SystemSound.play')),
+      );
+      await tester.pump(const Duration(seconds: 1));
+    });
+
+    testWidgets('the sound can be opted into', (tester) async {
+      await pumpScanner(
+        tester,
+        widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+          autoRequestCameraPermission: false,
+          soundOnAccept: true,
+        ),
+        validate: (_) async => const ScanDecision.accept(),
+      );
+
+      await emit('CODE-A');
+      await tester.pump();
+
+      expect(
+        platformCalls.map((call) => call.method),
+        contains('SystemSound.play'),
+      );
+      await tester.pump(const Duration(seconds: 1));
     });
   });
 }

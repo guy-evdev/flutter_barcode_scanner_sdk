@@ -151,6 +151,8 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   // which is what makes a slow backend safe.
   int _validationGeneration = 0;
   Timer? _feedbackTimer;
+  String? _cooldownValue;
+  Timer? _cooldownTimer;
 
   @override
   void initState() {
@@ -249,13 +251,49 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   /// Incrementing the generation is what makes an already-running validator
   /// harmless: its result no longer matches and is discarded on arrival.
   void _abandonValidation() {
+    _cooldownTimer?.cancel();
+    _cooldownTimer = null;
+    _cooldownValue = null;
     _validationGeneration += 1;
     _validationPhase = _ValidationPhase.idle;
     _feedbackTimer?.cancel();
     _feedbackTimer = null;
   }
 
+  /// Whether this result repeats the value that is currently in cooldown.
+  ///
+  /// Compares the decoded value, not merely elapsed time: a burst of the same
+  /// code is noise, but the next *different* code is the user moving on and
+  /// must never be swallowed.
+  bool _isDuplicate(FlutterBarcodeScanResult result) =>
+      result.isBarcode && result.rawValue == _cooldownValue;
+
+  /// Suppresses [value] until the cooldown elapses.
+  ///
+  /// A timer rather than a stored timestamp: timers are driven by the same
+  /// clock as the rest of the widget, which keeps the expiry observable in
+  /// tests instead of depending on wall time.
+  void _startCooldown(String value) {
+    final cooldown = widget.widgetConfig.duplicateScanCooldown;
+    if (cooldown <= Duration.zero) {
+      return;
+    }
+    _cooldownTimer?.cancel();
+    _cooldownValue = value;
+    _cooldownTimer = Timer(cooldown, () {
+      _cooldownValue = null;
+      _cooldownTimer = null;
+    });
+  }
+
   Future<void> _handleResult(FlutterBarcodeScanResult result) async {
+    if (_isDuplicate(result)) {
+      return;
+    }
+    if (result.isBarcode) {
+      _startCooldown(result.rawValue);
+    }
+
     widget.onScan?.call(result);
 
     final validate = widget.onScanValidate;
@@ -299,6 +337,12 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
       return;
     }
 
+    if (decision.isAccepted) {
+      // Deliberately not awaited: the banner must appear immediately, not after
+      // a platform round trip for a haptic.
+      unawaited(_playAcceptFeedback());
+    }
+
     _controller.publishFeedback(
       FlutterBarcodeScanFeedback(decision: decision, result: result),
     );
@@ -320,6 +364,24 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     _controller.publishFeedback(null);
     setState(() => _validationPhase = _ValidationPhase.idle);
     await _invokeControllerSafely(_controller.resumeDetection);
+  }
+
+  /// Haptic and audible confirmation for an accepted scan.
+  ///
+  /// Reduce Motion suppresses the haptic. The sound is the platform system
+  /// sound rather than a bundled asset, so the iOS silent switch mutes it
+  /// without the package needing to read a switch Flutter does not expose.
+  Future<void> _playAcceptFeedback() async {
+    final config = widget.widgetConfig;
+    if (config.hapticFeedbackOnAccept && mounted) {
+      final reduceMotion = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
+      if (!reduceMotion) {
+        await HapticFeedback.selectionClick();
+      }
+    }
+    if (config.soundOnAccept) {
+      await SystemSound.play(SystemSoundType.click);
+    }
   }
 
   /// Runs a controller call that is meaningless once the view is detached.

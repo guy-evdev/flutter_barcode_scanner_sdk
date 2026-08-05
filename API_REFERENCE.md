@@ -125,6 +125,9 @@ and negative corner radii become zero. The effective values are available from
 | `pausedScanWindowBorderColor` | `Color` | `Color(0xFFE53935)` | Scan-window border while detection is paused. |
 | `pauseTooltip` | `String` | `Pause scanner` | Pause button tooltip. |
 | `resumeTooltip` | `String` | `Resume scanner` | Resume button tooltip. |
+| `duplicateScanCooldown` | `Duration` | `250ms` | How long the *same* decoded value is ignored after being reported. A different value is always reported immediately. `Duration.zero` reports every decode. Barcode results only. |
+| `hapticFeedbackOnAccept` | `bool` | `true` | Fires a short haptic on an accepted `onScanValidate` decision. Suppressed under Reduce Motion. |
+| `soundOnAccept` | `bool` | `false` | Plays the platform system sound on an accepted decision. Uses the system sound, so the iOS silent switch mutes it. |
 | `validationFeedbackDuration` | `Duration` | `900ms` | How long accepted/rejected feedback shows before detection resumes. `Duration.zero` resumes immediately with no feedback. Only used with `onScanValidate`. |
 
 ## Controller

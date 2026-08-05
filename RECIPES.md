@@ -6,6 +6,8 @@ the two common flows; everything here is the long tail.
 ## Contents
 
 - [Continuous entry scanning](#continuous-entry-scanning)
+  - [Duplicate filtering](#duplicate-filtering)
+  - [Haptics and sound](#haptics-and-sound)
 - [Reacting to scanner state](#reacting-to-scanner-state)
 - [Handling errors](#handling-errors)
 - [Custom overlays](#custom-overlays)
@@ -55,6 +57,47 @@ showing no feedback at all.
 To render your own accepted/rejected treatment, supply an `overlayBuilder` and read
 `controller.feedbackListenable`; the built-in banner is skipped whenever a custom overlay is
 supplied.
+
+### Duplicate filtering
+
+A camera re-decodes the code in front of it many times a second, so one physical barcode
+produces a burst of identical results. `duplicateScanCooldown` suppresses repeats of the **same
+value** for 250 ms by default.
+
+It is deliberately value-based rather than a plain time throttle: moving to a *different* code
+is reported immediately, which is what makes scanning down a dense sheet work. Cancellations and
+errors are never filtered.
+
+```dart
+const FlutterBarcodeScannerWidgetConfig(
+  duplicateScanCooldown: Duration(milliseconds: 400), // more forgiving
+  // duplicateScanCooldown: Duration.zero,            // report every decode
+);
+```
+
+The filter runs before `onScan` and before `onScanValidate`, so a suppressed repeat reaches
+neither. That is separate from the validate loop's own re-entry guard: the cooldown stops the
+same code being reported twice, while the loop stops *any* code being validated while a decision
+is pending.
+
+### Haptics and sound
+
+An accepted decision fires a short haptic by default, and can also play a sound:
+
+```dart
+const FlutterBarcodeScannerWidgetConfig(
+  hapticFeedbackOnAccept: true,  // default
+  soundOnAccept: true,           // off by default
+);
+```
+
+Both fire only for accepted `onScanValidate` decisions — not for rejections, and not for plain
+`onScan` results.
+
+Two accessibility notes. The haptic is suppressed when the platform reports **Reduce Motion**.
+The sound is the platform's own short system sound rather than a bundled asset, which is what
+makes the **iOS silent switch** mute it — Flutter cannot query that switch, so honouring it
+depends on using a system sound.
 
 ### Doing it by hand
 
