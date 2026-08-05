@@ -265,21 +265,27 @@ button that `showPauseResumeButton` adds. Drive `controller.pauseDetection()` an
 
 ## Scan-window geometry
 
-`scanWindow.widthFactor` and `heightFactor` are fractions of the preview, clamped to
-`0.2...0.95` and `0.2...0.9`. Read the applied values back through `effectiveWidthFactor` and
-`effectiveHeightFactor`.
-
-One rule is easy to trip over: **when the two factors are equal, the window is forced square at
-`min(width, height)`**, on both platforms and in the Flutter overlay. So the `0.58 / 0.58`
-default is a square at 58% of the *preview height* on a portrait phone, not a rectangle 58%
-wide. For a long Code 128 label, ask for an explicitly non-square window:
+`scanWindow.rect` is a `Rect` in normalized preview coordinates — each side a fraction of the
+preview, not logical pixels, because the preview size is not known when the config is built.
 
 ```dart
 const FlutterBarcodeScannerScanWindow(
-  widthFactor: 0.9,
-  heightFactor: 0.35,
+  rect: Rect.fromLTWH(0.05, 0.35, 0.9, 0.3), // wide band for long linear codes
 );
 ```
+
+The default is `Rect.fromLTWH(0.1, 0.3, 0.8, 0.4)` — a centered band, wider than tall, because
+the formats that most need a window are the long linear ones.
+
+Read the applied geometry back with `effectiveRect` (clamped into the preview, guaranteed to
+have area) or `resolve(size)`, which maps it onto a concrete preview size and returns `null`
+when the window is disabled.
+
+**The old square rule is gone.** Before 0.3.0, equal width and height factors silently collapsed
+the window to a square at `min(width, height)`, so the `0.58 / 0.58` default was a narrow box on
+a portrait phone rather than the wide band it read as. `FlutterBarcodeScannerScanWindow.fromFactors`
+still exists for one release so old code compiles, but it no longer applies that rule — equal
+factors now give a true rectangle.
 
 Detection is not clipped to the window on either platform. The full frame is decoded and the
 result is then rejected unless the barcode's centre falls inside the window, because

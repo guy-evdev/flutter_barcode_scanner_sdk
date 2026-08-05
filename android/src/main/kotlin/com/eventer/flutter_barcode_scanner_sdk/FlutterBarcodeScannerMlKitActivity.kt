@@ -11,6 +11,7 @@ import android.util.Size
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -90,6 +91,9 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             }
         isFlashEnabled = config.initialTorchEnabled
 
+        if (config.keepScreenOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         requestedOrientation = resolveCurrentOrientation()
         onBackPressedDispatcher.addCallback(this) {
             finishWithPayload(ScannerActivityContract.cancelledResult())
@@ -303,8 +307,10 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             setBorderLineLength(dp(26))
             setBorderCornerRadius(config.scanWindowCornerRadius.toInt())
             applyWindowConfig(
-                widthFactor = config.scanWindowWidthFactor,
-                heightFactor = config.scanWindowHeightFactor,
+                left = config.scanWindowLeft,
+                top = config.scanWindowTop,
+                width = config.scanWindowWidth,
+                height = config.scanWindowHeight,
                 cornerRadius = config.scanWindowCornerRadius,
             )
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->

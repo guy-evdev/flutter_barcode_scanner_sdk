@@ -73,15 +73,20 @@ whose out-of-range factors happen to clamp to the same result are not equal.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `bool` | `true` | Limits detection to a centered scan window. `false` scans the whole preview. |
-| `widthFactor` | `double` | `0.58` | Scan-window width as a fraction of preview width. |
-| `heightFactor` | `double` | `0.58` | Scan-window height as a fraction of preview height. |
+| `enabled` | `bool` | `true` | Limits detection to the scan window. `false` scans the whole preview. |
+| `rect` | `Rect` | `Rect.fromLTWH(0.1, 0.3, 0.8, 0.4)` | The window in normalized preview coordinates, each side a fraction in `0.0...1.0`. |
 | `cornerRadius` | `double` | `18` | Scan-window overlay corner radius. |
 
-Width and height factors are normalized to the cross-platform supported ranges
-(`0.2...0.95` and `0.2...0.9` respectively). Non-finite values use defaults,
-and negative corner radii become zero. The effective values are available from
-`effectiveWidthFactor`, `effectiveHeightFactor`, and `effectiveCornerRadius`.
+| Member | Returns | Description |
+| --- | --- | --- |
+| `effectiveRect` | `Rect` | `rect` clamped into the preview and guaranteed to have area. Non-finite or zero-area values fall back to the default. |
+| `resolve(Size)` | `Rect?` | The window against a concrete preview size, or `null` when disabled. |
+| `FlutterBarcodeScannerScanWindow.fromFactors(...)` | — | **Deprecated, removed in 0.4.0.** Kept so pre-0.3.0 code compiles. Equal factors no longer collapse to a square. |
+
+The rect is clamped rather than rejected: values outside `0.0...1.0` are pulled inside the
+preview, and a zero-area or non-finite rect falls back to the default. The clamped rect is what
+goes over the method channel, so the Flutter overlay and both native scanners frame the same
+region.
 
 ### `FlutterBarcodeScannerUiConfig`
 
@@ -91,6 +96,7 @@ and negative corner radii become zero. The effective values are available from
 | `showCameraSwitchButton` | `bool` | `true` | Shows the camera switch control when supported. |
 | `initialCameraLens` | `BarcodeCameraLens` | `BarcodeCameraLens.back` | Initial camera lens. |
 | `initialTorchEnabled` | `bool` | `false` | Attempts to start with torch enabled. |
+| `keepScreenOn` | `bool` | `false` | Keeps the display awake while the camera runs. Released as soon as the camera stops. |
 
 ### `FlutterBarcodeScannerStatusBarStyle`
 
@@ -123,7 +129,6 @@ and negative corner radii become zero. The effective values are available from
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `autoRequestCameraPermission` | `bool` | `true` | Requests camera permission before creating the platform view. |
-| `freezePreviewWhenPaused` | `bool` | `false` | **Deprecated, no-op on both platforms.** The preview stays live while detection is paused; use `pausedScanWindowBorderColor` to signal the paused state. Removed in 0.3.0. |
 | `showPauseResumeButton` | `bool` | `false` | Adds a default Flutter pause/resume overlay button. |
 | `scanWindowBorderColor` | `Color` | `Colors.white` | Scan-window border while detection runs. |
 | `pausedScanWindowBorderColor` | `Color` | `Color(0xFFE53935)` | Scan-window border while detection is paused. |

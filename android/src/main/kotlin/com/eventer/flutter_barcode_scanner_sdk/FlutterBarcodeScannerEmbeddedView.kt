@@ -11,6 +11,7 @@ import android.os.Looper
 import android.util.Size
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -296,6 +297,7 @@ class FlutterBarcodeScannerEmbeddedView(
             // the barcode-to-preview coordinate transform used for ROI checks.
             camera = provider.bindToLifecycle(owner, selector, previewUseCase, analysisUseCase)
             hasEverStartedCamera = true
+            applyKeepScreenOn(enabled = true)
             val boundCamera = camera
             if (boundCamera?.cameraInfo?.hasFlashUnit() != true) {
                 isFlashEnabled = false
@@ -314,7 +316,26 @@ class FlutterBarcodeScannerEmbeddedView(
         }
     }
 
+    /**
+     * Holds or releases the host window's keep-awake flag.
+     *
+     * Scoped to the camera running rather than the view existing: a scanner
+     * that is mounted but stopped has no business keeping the display on.
+     */
+    private fun applyKeepScreenOn(enabled: Boolean) {
+        if (!config.keepScreenOn && enabled) {
+            return
+        }
+        val window = activityProvider()?.window ?: return
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     private fun stopCamera(emitState: Boolean = true) {
+        applyKeepScreenOn(enabled = false)
         mainHandler.removeCallbacks(startCameraRetry)
         isStartDeferred = false
         startAttempts.reset()
@@ -642,19 +663,8 @@ class FlutterBarcodeScannerEmbeddedView(
         }
     }
 
-    private fun scanWindowRect(): RectF {
-        if (!config.scanWindowEnabled || previewView.width <= 0 || previewView.height <= 0) {
-            return RectF()
-        }
-        val requestedWidth = previewView.width * config.scanWindowWidthFactor
-        val requestedHeight = previewView.height * config.scanWindowHeightFactor
-        val useSquare = kotlin.math.abs(config.scanWindowWidthFactor - config.scanWindowHeightFactor) < 0.001f
-        val width = if (useSquare) minOf(requestedWidth, requestedHeight) else requestedWidth
-        val height = if (useSquare) width else requestedHeight
-        val left = (previewView.width - width) / 2f
-        val top = (previewView.height - height) / 2f
-        return RectF(left, top, left + width, top + height)
-    }
+    private fun scanWindowRect(): RectF =
+        config.scanWindowRect(previewView.width, previewView.height)
 
     private fun emitResult(barcode: Barcode) {
         invokeOnMain(

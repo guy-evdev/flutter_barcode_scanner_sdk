@@ -57,8 +57,10 @@ internal class FlutterBarcodeScannerSdkPluginTest {
                 "allowedFormats" to listOf("QR_CODE", "INVALID", "CODE_128"),
                 "scanWindow" to mapOf(
                     "enabled" to true,
-                    "widthFactor" to 2.0,
-                    "heightFactor" to 0.1,
+                    "left" to 0.1,
+                    "top" to 0.3,
+                    "width" to 2.0,
+                    "height" to 0.4,
                     "cornerRadius" to 24,
                 ),
                 "uiConfig" to mapOf(
@@ -76,8 +78,9 @@ internal class FlutterBarcodeScannerSdkPluginTest {
         assertTrue(config.showCameraSwitchButton)
         assertEquals("front", config.initialCameraLens)
         assertTrue(config.initialTorchEnabled)
-        assertEquals(0.95f, config.scanWindowWidthFactor)
-        assertEquals(0.2f, config.scanWindowHeightFactor)
+        // An over-wide window is clamped to the preview rather than rejected.
+        assertEquals(1f, config.scanWindowWidth)
+        assertEquals(0.4f, config.scanWindowHeight)
         assertEquals(24f, config.scanWindowCornerRadius)
     }
 
@@ -86,8 +89,8 @@ internal class FlutterBarcodeScannerSdkPluginTest {
         val config = ScannerConfig.fromMap(
             mapOf(
                 "scanWindow" to mapOf(
-                    "widthFactor" to Double.NaN,
-                    "heightFactor" to Double.POSITIVE_INFINITY,
+                    "width" to Double.NaN,
+                    "height" to Double.POSITIVE_INFINITY,
                     "cornerRadius" to -4,
                 ),
                 "uiConfig" to mapOf("initialCameraLens" to "external"),
@@ -95,8 +98,8 @@ internal class FlutterBarcodeScannerSdkPluginTest {
             ),
         )
 
-        assertEquals(0.58f, config.scanWindowWidthFactor)
-        assertEquals(0.58f, config.scanWindowHeightFactor)
+        assertEquals(0.8f, config.scanWindowWidth)
+        assertEquals(0.4f, config.scanWindowHeight)
         assertEquals(0f, config.scanWindowCornerRadius)
         assertEquals("back", config.initialCameraLens)
     }

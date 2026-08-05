@@ -229,8 +229,12 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     if (!_controller.isAttached) {
       return;
     }
+    // Deliberately not `inactive`: on iOS that fires for a notification
+    // banner, Control Center and the app switcher, and each one used to cost a
+    // full camera stop and rebind — hundreds of milliseconds of dead time,
+    // repeatedly, during a shift.
     if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
         state == AppLifecycleState.detached) {
       final shouldRestart =
           _state == FlutterBarcodeScannerViewState.running ||
@@ -709,30 +713,7 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
       !_supportsCameraPlatform ||
       _permissionStatus?.isGranted == true;
 
-  Rect? _scanWindowForSize(Size size) {
-    if (!widget.config.scanWindow.enabled ||
-        size.width <= 0 ||
-        size.height <= 0) {
-      return null;
-    }
-    final scanWindow = widget.config.scanWindow;
-    final requestedWidth = size.width * scanWindow.effectiveWidthFactor;
-    final requestedHeight = size.height * scanWindow.effectiveHeightFactor;
-    final useSquare =
-        (scanWindow.effectiveWidthFactor - scanWindow.effectiveHeightFactor)
-            .abs() <
-        0.001;
-    final width = useSquare
-        ? requestedWidth.clamp(0, requestedHeight)
-        : requestedWidth;
-    final height = useSquare ? width.toDouble() : requestedHeight;
-    return Rect.fromLTWH(
-      (size.width - width) / 2,
-      (size.height - height) / 2,
-      width.toDouble(),
-      height.toDouble(),
-    );
-  }
+  Rect? _scanWindowForSize(Size size) => widget.config.scanWindow.resolve(size);
 
   void _onPlatformViewCreated(int id) {
     _controller.attach(id);

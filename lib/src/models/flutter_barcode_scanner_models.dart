@@ -451,43 +451,79 @@ class FlutterBarcodeScannerStrings {
 /// Region-of-interest configuration for barcode detection.
 @immutable
 class FlutterBarcodeScannerScanWindow {
-  /// Creates scan-window configuration.
+  /// Creates a scan window from a rect in normalized preview coordinates.
+  ///
+  /// [rect] is expressed as fractions of the preview, so `Rect.fromLTWH(0.1,
+  /// 0.3, 0.8, 0.4)` is a band 80% of the preview wide and 40% tall, centered.
+  /// The preview size is not known when the config is built, which is why the
+  /// rect is relative rather than in logical pixels.
   const FlutterBarcodeScannerScanWindow({
     this.enabled = true,
-    this.widthFactor = 0.58,
-    this.heightFactor = 0.58,
+    this.rect = defaultRect,
     this.cornerRadius = 18,
   });
 
-  /// Whether detection is limited to the centered scan window.
+  /// Creates a scan window from width and height factors.
+  ///
+  /// Kept so code written against the pre-0.3.0 API still compiles. The
+  /// geometry is **not** identical: equal factors used to collapse the window
+  /// to a square at `min(width, height)`, an undocumented rule that made the
+  /// old `0.58 / 0.58` default a narrow box on a portrait phone rather than the
+  /// wide band it read as. That rule is gone, so equal factors now produce a
+  /// true rectangle. Pass [rect] directly to say exactly what you mean.
+  @Deprecated(
+    'Use the default constructor with a rect. Equal factors no longer collapse '
+    'to a square. This constructor is removed in 0.4.0.',
+  )
+  factory FlutterBarcodeScannerScanWindow.fromFactors({
+    bool enabled = true,
+    double widthFactor = 0.58,
+    double heightFactor = 0.58,
+    double cornerRadius = 18,
+  }) {
+    final width = _clampFraction(widthFactor, fallback: 0.8);
+    final height = _clampFraction(heightFactor, fallback: 0.4);
+    return FlutterBarcodeScannerScanWindow(
+      enabled: enabled,
+      rect: Rect.fromLTWH((1 - width) / 2, (1 - height) / 2, width, height),
+      cornerRadius: cornerRadius,
+    );
+  }
+
+  /// The window used when none is given: a centered band, 80% by 40%.
+  ///
+  /// Wider than tall because the formats that most need a window are the long
+  /// linear ones; a square default is the shape that made them hard to frame.
+  static const Rect defaultRect = Rect.fromLTWH(0.1, 0.3, 0.8, 0.4);
+
+  /// Whether detection is limited to the scan window.
   ///
   /// When `false`, the whole native preview is scanned.
   final bool enabled;
 
-  /// Width of the centered scan window as a fraction of the preview width.
-  final double widthFactor;
-
-  /// Height of the centered scan window as a fraction of the preview height.
-  final double heightFactor;
+  /// The window in normalized preview coordinates, each side in `0.0...1.0`.
+  final Rect rect;
 
   /// Corner radius, in logical pixels, for the scan-window overlay.
   final double cornerRadius;
 
-  /// Width factor after applying the native scanner's supported bounds.
-  double get effectiveWidthFactor => _normalizedFactor(
-    widthFactor,
-    minimum: 0.2,
-    maximum: 0.95,
-    fallback: 0.58,
-  );
-
-  /// Height factor after applying the native scanner's supported bounds.
-  double get effectiveHeightFactor => _normalizedFactor(
-    heightFactor,
-    minimum: 0.2,
-    maximum: 0.9,
-    fallback: 0.58,
-  );
+  /// [rect] clamped into the preview and guaranteed to have a usable area.
+  ///
+  /// Non-finite or inverted values fall back to [defaultRect] rather than
+  /// producing a window nothing can ever be detected inside.
+  Rect get effectiveRect {
+    if (!rect.left.isFinite ||
+        !rect.top.isFinite ||
+        !rect.width.isFinite ||
+        !rect.height.isFinite) {
+      return defaultRect;
+    }
+    final width = _clampFraction(rect.width, fallback: defaultRect.width);
+    final height = _clampFraction(rect.height, fallback: defaultRect.height);
+    final left = rect.left.clamp(0.0, 1.0 - width).toDouble();
+    final top = rect.top.clamp(0.0, 1.0 - height).toDouble();
+    return Rect.fromLTWH(left, top, width, height);
+  }
 
   /// Non-negative finite corner radius used by scanner overlays.
   double get effectiveCornerRadius {
@@ -497,33 +533,55 @@ class FlutterBarcodeScannerScanWindow {
     return cornerRadius < 0 ? 0 : cornerRadius;
   }
 
+  /// Resolves the window against a concrete preview size.
+  ///
+  /// Returns `null` when the window is disabled or the size is degenerate.
+  Rect? resolve(Size size) {
+    if (!enabled || size.width <= 0 || size.height <= 0) {
+      return null;
+    }
+    final fraction = effectiveRect;
+    return Rect.fromLTWH(
+      fraction.left * size.width,
+      fraction.top * size.height,
+      fraction.width * size.width,
+      fraction.height * size.height,
+    );
+  }
+
   /// Returns a copy with selected values replaced.
   FlutterBarcodeScannerScanWindow copyWith({
     bool? enabled,
-    double? widthFactor,
-    double? heightFactor,
+    Rect? rect,
     double? cornerRadius,
   }) {
     return FlutterBarcodeScannerScanWindow(
       enabled: enabled ?? this.enabled,
-      widthFactor: widthFactor ?? this.widthFactor,
-      heightFactor: heightFactor ?? this.heightFactor,
+      rect: rect ?? this.rect,
       cornerRadius: cornerRadius ?? this.cornerRadius,
     );
   }
 
   /// Converts the scan window into the method-channel payload map.
-  Map<String, Object?> toMap() => {
-    'enabled': enabled,
-    'widthFactor': effectiveWidthFactor,
-    'heightFactor': effectiveHeightFactor,
-    'cornerRadius': effectiveCornerRadius,
-  };
+  ///
+  /// Sends the clamped rect, so all three layers frame the same region without
+  /// each re-deriving it.
+  Map<String, Object?> toMap() {
+    final fraction = effectiveRect;
+    return {
+      'enabled': enabled,
+      'left': fraction.left,
+      'top': fraction.top,
+      'width': fraction.width,
+      'height': fraction.height,
+      'cornerRadius': effectiveCornerRadius,
+    };
+  }
 
   /// Whether two scan windows carry the same values.
   ///
   /// Compares the values as written, not the clamped `effective*` values, so
-  /// two windows whose out-of-range factors happen to clamp to the same result
+  /// two windows whose out-of-range rects happen to clamp to the same result
   /// are **not** equal.
   @override
   bool operator ==(Object other) {
@@ -535,25 +593,21 @@ class FlutterBarcodeScannerScanWindow {
     }
     return other is FlutterBarcodeScannerScanWindow &&
         other.enabled == enabled &&
-        other.widthFactor == widthFactor &&
-        other.heightFactor == heightFactor &&
+        other.rect == rect &&
         other.cornerRadius == cornerRadius;
   }
 
   @override
-  int get hashCode =>
-      Object.hash(enabled, widthFactor, heightFactor, cornerRadius);
+  int get hashCode => Object.hash(enabled, rect, cornerRadius);
 
-  static double _normalizedFactor(
-    double value, {
-    required double minimum,
-    required double maximum,
-    required double fallback,
-  }) {
-    if (!value.isFinite) {
+  /// Clamps a fraction into a usable slice of the preview.
+  ///
+  /// The floor keeps a mistyped `0.0` from producing a window with no area.
+  static double _clampFraction(double value, {required double fallback}) {
+    if (!value.isFinite || value <= 0) {
       return fallback;
     }
-    return value.clamp(minimum, maximum).toDouble();
+    return value.clamp(0.05, 1.0).toDouble();
   }
 }
 
@@ -566,6 +620,7 @@ class FlutterBarcodeScannerUiConfig {
     this.showCameraSwitchButton = true,
     this.initialCameraLens = BarcodeCameraLens.back,
     this.initialTorchEnabled = false,
+    this.keepScreenOn = false,
   });
 
   /// Whether the native or default Flutter overlay should show a flash button.
@@ -580,12 +635,21 @@ class FlutterBarcodeScannerUiConfig {
   /// Whether the scanner should try to enable the torch when it starts.
   final bool initialTorchEnabled;
 
+  /// Whether the screen is kept awake while the camera is running.
+  ///
+  /// Off by default, so enabling the feature changes nothing for existing code.
+  /// Turn it on for long scanning sessions, where the display timing out
+  /// mid-shift is the usual complaint. The lock is released as soon as the
+  /// camera stops, so it never outlives the scanner.
+  final bool keepScreenOn;
+
   /// Returns a copy with selected values replaced.
   FlutterBarcodeScannerUiConfig copyWith({
     bool? showFlashButton,
     bool? showCameraSwitchButton,
     BarcodeCameraLens? initialCameraLens,
     bool? initialTorchEnabled,
+    bool? keepScreenOn,
   }) {
     return FlutterBarcodeScannerUiConfig(
       showFlashButton: showFlashButton ?? this.showFlashButton,
@@ -593,6 +657,7 @@ class FlutterBarcodeScannerUiConfig {
           showCameraSwitchButton ?? this.showCameraSwitchButton,
       initialCameraLens: initialCameraLens ?? this.initialCameraLens,
       initialTorchEnabled: initialTorchEnabled ?? this.initialTorchEnabled,
+      keepScreenOn: keepScreenOn ?? this.keepScreenOn,
     );
   }
 
@@ -602,6 +667,7 @@ class FlutterBarcodeScannerUiConfig {
     'showCameraSwitchButton': showCameraSwitchButton,
     'initialCameraLens': initialCameraLens.name,
     'initialTorchEnabled': initialTorchEnabled,
+    'keepScreenOn': keepScreenOn,
   };
 
   @override
@@ -616,7 +682,8 @@ class FlutterBarcodeScannerUiConfig {
         other.showFlashButton == showFlashButton &&
         other.showCameraSwitchButton == showCameraSwitchButton &&
         other.initialCameraLens == initialCameraLens &&
-        other.initialTorchEnabled == initialTorchEnabled;
+        other.initialTorchEnabled == initialTorchEnabled &&
+        other.keepScreenOn == keepScreenOn;
   }
 
   @override
@@ -625,6 +692,7 @@ class FlutterBarcodeScannerUiConfig {
     showCameraSwitchButton,
     initialCameraLens,
     initialTorchEnabled,
+    keepScreenOn,
   );
 }
 
@@ -730,11 +798,6 @@ class FlutterBarcodeScannerWidgetConfig {
   /// Creates embedded scanner widget configuration.
   const FlutterBarcodeScannerWidgetConfig({
     this.autoRequestCameraPermission = true,
-    @Deprecated(
-      'Has no effect. The preview now stays live while detection is paused. '
-      'This field is removed in 0.3.0.',
-    )
-    this.freezePreviewWhenPaused = false,
     this.showPauseResumeButton = false,
     this.scanWindowBorderColor = Colors.white,
     this.pausedScanWindowBorderColor = const Color(0xFFE53935),
@@ -749,23 +812,6 @@ class FlutterBarcodeScannerWidgetConfig {
   /// Whether the widget should request camera permission before creating the
   /// native platform view.
   final bool autoRequestCameraPermission;
-
-  /// No longer has any effect on either platform.
-  ///
-  /// The preview keeps showing live video while detection is paused. Use
-  /// [pausedScanWindowBorderColor] to signal the paused state.
-  ///
-  /// This never worked on iOS: the frozen frame was captured with
-  /// `CALayer.render(in:)`, which cannot draw `AVCaptureVideoPreviewLayer`
-  /// content, so the "frozen" preview was blank. On Android it allocated a
-  /// full-resolution bitmap on every scan, which is untenable for sustained
-  /// scanning. Both native implementations were removed in 0.2.1 rather than
-  /// repaired, and this field is removed in 0.3.0.
-  @Deprecated(
-    'Has no effect. The preview now stays live while detection is paused. '
-    'This field is removed in 0.3.0.',
-  )
-  final bool freezePreviewWhenPaused;
 
   /// Whether the default overlay should include a pause/resume button.
   final bool showPauseResumeButton;
@@ -818,11 +864,6 @@ class FlutterBarcodeScannerWidgetConfig {
   /// Returns a copy with selected values replaced.
   FlutterBarcodeScannerWidgetConfig copyWith({
     bool? autoRequestCameraPermission,
-    @Deprecated(
-      'Has no effect. The preview now stays live while detection is paused. '
-      'This parameter is removed in 0.3.0.',
-    )
-    bool? freezePreviewWhenPaused,
     bool? showPauseResumeButton,
     Color? scanWindowBorderColor,
     Color? pausedScanWindowBorderColor,
@@ -836,11 +877,6 @@ class FlutterBarcodeScannerWidgetConfig {
     return FlutterBarcodeScannerWidgetConfig(
       autoRequestCameraPermission:
           autoRequestCameraPermission ?? this.autoRequestCameraPermission,
-      // Carried until 0.3.0 removes the field, so a caller that still sets it
-      // keeps a faithful copy rather than a silently reset one.
-      // ignore: deprecated_member_use_from_same_package
-      freezePreviewWhenPaused:
-          freezePreviewWhenPaused ?? this.freezePreviewWhenPaused,
       showPauseResumeButton:
           showPauseResumeButton ?? this.showPauseResumeButton,
       scanWindowBorderColor:
@@ -862,10 +898,6 @@ class FlutterBarcodeScannerWidgetConfig {
   /// Converts the widget configuration into the method-channel payload map.
   Map<String, Object?> toMap() => {
     'autoRequestCameraPermission': autoRequestCameraPermission,
-    // Native no longer reads this key. It stays on the wire until 0.3.0 so the
-    // channel contract does not change inside a patch release.
-    // ignore: deprecated_member_use_from_same_package
-    'freezePreviewWhenPaused': freezePreviewWhenPaused,
     'showPauseResumeButton': showPauseResumeButton,
     'scanWindowBorderColor': scanWindowBorderColor.toARGB32(),
     'pausedScanWindowBorderColor': pausedScanWindowBorderColor.toARGB32(),
@@ -883,10 +915,6 @@ class FlutterBarcodeScannerWidgetConfig {
     }
     return other is FlutterBarcodeScannerWidgetConfig &&
         other.autoRequestCameraPermission == autoRequestCameraPermission &&
-        // Compared until 0.3.0 removes the field, so two configs differing only
-        // in it are still reported as different rather than silently merged.
-        // ignore: deprecated_member_use_from_same_package
-        other.freezePreviewWhenPaused == freezePreviewWhenPaused &&
         other.showPauseResumeButton == showPauseResumeButton &&
         other.scanWindowBorderColor == scanWindowBorderColor &&
         other.pausedScanWindowBorderColor == pausedScanWindowBorderColor &&
@@ -901,8 +929,6 @@ class FlutterBarcodeScannerWidgetConfig {
   @override
   int get hashCode => Object.hash(
     autoRequestCameraPermission,
-    // ignore: deprecated_member_use_from_same_package
-    freezePreviewWhenPaused,
     showPauseResumeButton,
     scanWindowBorderColor,
     pausedScanWindowBorderColor,

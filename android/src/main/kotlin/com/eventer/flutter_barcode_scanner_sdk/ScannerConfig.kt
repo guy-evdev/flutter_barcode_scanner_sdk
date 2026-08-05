@@ -1,5 +1,6 @@
 package com.eventer.flutter_barcode_scanner_sdk
 
+import android.graphics.RectF
 import java.io.Serializable
 
 data class ScannerStrings(
@@ -19,10 +20,13 @@ data class ScannerConfig(
     val showCameraSwitchButton: Boolean,
     val initialCameraLens: String,
     val initialTorchEnabled: Boolean,
+    val keepScreenOn: Boolean,
     val textDirection: String?,
     val scanWindowEnabled: Boolean,
-    val scanWindowWidthFactor: Float,
-    val scanWindowHeightFactor: Float,
+    val scanWindowLeft: Float,
+    val scanWindowTop: Float,
+    val scanWindowWidth: Float,
+    val scanWindowHeight: Float,
     val scanWindowCornerRadius: Float,
     val statusBarTransparent: Boolean,
     val statusBarBackgroundColor: Int?,
@@ -67,22 +71,37 @@ data class ScannerConfig(
                         ?: "back",
                 initialTorchEnabled =
                     uiMap?.get("initialTorchEnabled") as? Boolean ?: false,
+                keepScreenOn = uiMap?.get("keepScreenOn") as? Boolean ?: false,
                 textDirection = map?.get("textDirection") as? String,
                 scanWindowEnabled =
                     windowMap?.get("enabled") as? Boolean ?: true,
-                scanWindowWidthFactor =
+                scanWindowLeft =
                     normalizedFloat(
-                        windowMap?.get("widthFactor"),
-                        fallback = 0.58f,
-                        minimum = 0.2f,
-                        maximum = 0.95f,
+                        windowMap?.get("left"),
+                        fallback = 0.1f,
+                        minimum = 0f,
+                        maximum = 1f,
                     ),
-                scanWindowHeightFactor =
+                scanWindowTop =
                     normalizedFloat(
-                        windowMap?.get("heightFactor"),
-                        fallback = 0.58f,
-                        minimum = 0.2f,
-                        maximum = 0.9f,
+                        windowMap?.get("top"),
+                        fallback = 0.3f,
+                        minimum = 0f,
+                        maximum = 1f,
+                    ),
+                scanWindowWidth =
+                    normalizedFloat(
+                        windowMap?.get("width"),
+                        fallback = 0.8f,
+                        minimum = 0.05f,
+                        maximum = 1f,
+                    ),
+                scanWindowHeight =
+                    normalizedFloat(
+                        windowMap?.get("height"),
+                        fallback = 0.4f,
+                        minimum = 0.05f,
+                        maximum = 1f,
                     ),
                 scanWindowCornerRadius =
                     normalizedFloat(
@@ -161,10 +180,13 @@ data class ScannerConfig(
             "showCameraSwitchButton" to showCameraSwitchButton,
             "initialCameraLens" to initialCameraLens,
             "initialTorchEnabled" to initialTorchEnabled,
+            "keepScreenOn" to keepScreenOn,
             "textDirection" to (textDirection ?: ""),
             "scanWindowEnabled" to scanWindowEnabled,
-            "scanWindowWidthFactor" to scanWindowWidthFactor,
-            "scanWindowHeightFactor" to scanWindowHeightFactor,
+            "scanWindowLeft" to scanWindowLeft,
+            "scanWindowTop" to scanWindowTop,
+            "scanWindowWidth" to scanWindowWidth,
+            "scanWindowHeight" to scanWindowHeight,
             "scanWindowCornerRadius" to scanWindowCornerRadius,
             "statusBarTransparent" to statusBarTransparent,
             "statusBarBackgroundColor" to (statusBarBackgroundColor ?: Int.MIN_VALUE),
@@ -173,6 +195,29 @@ data class ScannerConfig(
             "appBarBackgroundColor" to (appBarBackgroundColor ?: Int.MIN_VALUE),
             "appBarForegroundColor" to (appBarForegroundColor ?: Int.MIN_VALUE),
             "overlayColor" to overlayColor,
+        )
+    }
+
+    /**
+     * The scan window in view pixels.
+     *
+     * The rect arrives already clamped from Dart, so every layer frames the
+     * same region instead of each re-deriving it — the old width/height factors
+     * carried a hidden "equal factors mean square" rule that all three layers
+     * had to reimplement identically, and which made the default window a
+     * narrow box rather than the wide band it read as.
+     */
+    fun scanWindowRect(width: Int, height: Int): RectF {
+        if (!scanWindowEnabled || width <= 0 || height <= 0) {
+            return RectF()
+        }
+        val left = scanWindowLeft * width
+        val top = scanWindowTop * height
+        return RectF(
+            left,
+            top,
+            left + scanWindowWidth * width,
+            top + scanWindowHeight * height,
         )
     }
 

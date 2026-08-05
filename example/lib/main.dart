@@ -842,8 +842,12 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
       strings: strings,
       scanWindow: FlutterBarcodeScannerScanWindow(
         enabled: _scanWindowEnabled,
-        widthFactor: _scanWindowWidthFactor,
-        heightFactor: _scanWindowHeightFactor,
+        rect: Rect.fromLTWH(
+          (1 - _scanWindowWidthFactor) / 2,
+          (1 - _scanWindowHeightFactor) / 2,
+          _scanWindowWidthFactor,
+          _scanWindowHeightFactor,
+        ),
         cornerRadius: _scanWindowCornerRadius,
       ),
       uiConfig: FlutterBarcodeScannerUiConfig(

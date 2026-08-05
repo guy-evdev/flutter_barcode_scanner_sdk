@@ -8,18 +8,70 @@ class RunnerTests: XCTestCase {
         let config = ScannerConfig(
             arguments: [
                 "scanWindow": [
-                    "widthFactor": Double.infinity,
-                    "heightFactor": 0.01,
+                    "width": Double.infinity,
+                    "height": 0.01,
                     "cornerRadius": -4,
                 ],
                 "uiConfig": ["initialCameraLens": "front"],
             ]
         )
 
-        XCTAssertEqual(config.scanWindowWidthFactor, 0.58)
-        XCTAssertEqual(config.scanWindowHeightFactor, 0.2)
+        XCTAssertEqual(config.scanWindowWidth, 0.8)
+        XCTAssertEqual(config.scanWindowHeight, 0.05)
         XCTAssertEqual(config.scanWindowCornerRadius, 0)
         XCTAssertEqual(config.initialCameraPosition, AVCaptureDevice.Position.front)
+    }
+
+    // MARK: - B16, rect scan window
+
+    func testScanWindowRectMapsOntoBounds() {
+        let config = ScannerConfig(
+            arguments: [
+                "scanWindow": [
+                    "enabled": true,
+                    "left": 0.1,
+                    "top": 0.2,
+                    "width": 0.8,
+                    "height": 0.4,
+                ],
+            ]
+        )
+
+        let rect = config.scanWindowRect(in: CGRect(x: 0, y: 0, width: 400, height: 800))
+
+        XCTAssertEqual(rect.minX, 40, accuracy: 0.001)
+        XCTAssertEqual(rect.minY, 160, accuracy: 0.001)
+        XCTAssertEqual(rect.width, 320, accuracy: 0.001)
+        XCTAssertEqual(rect.height, 320, accuracy: 0.001)
+    }
+
+    func testEqualWidthAndHeightNoLongerCollapseToASquare() {
+        // B16: the old rule forced min(width, height) whenever the two factors
+        // matched, which is what made the default window a narrow box.
+        let config = ScannerConfig(
+            arguments: [
+                "scanWindow": [
+                    "enabled": true,
+                    "left": 0.1,
+                    "top": 0.1,
+                    "width": 0.8,
+                    "height": 0.8,
+                ],
+            ]
+        )
+
+        let rect = config.scanWindowRect(in: CGRect(x: 0, y: 0, width: 400, height: 800))
+
+        XCTAssertEqual(rect.width, 320, accuracy: 0.001)
+        XCTAssertEqual(rect.height, 640, accuracy: 0.001)
+    }
+
+    func testDisabledWindowIsEmpty() {
+        let config = ScannerConfig(arguments: ["scanWindow": ["enabled": false]])
+
+        XCTAssertTrue(
+            config.scanWindowRect(in: CGRect(x: 0, y: 0, width: 400, height: 800)).isEmpty
+        )
     }
 
     func testScannerConfigMapsRequestedFormats() {

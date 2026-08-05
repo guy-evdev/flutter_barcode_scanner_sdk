@@ -14,8 +14,7 @@ void main() {
       strings: FlutterBarcodeScannerStrings(title: 'Barcode Scanner'),
       scanWindow: FlutterBarcodeScannerScanWindow(
         enabled: false,
-        widthFactor: 0.7,
-        heightFactor: 0.4,
+        rect: Rect.fromLTWH(0.15, 0.3, 0.7, 0.4),
         cornerRadius: 24,
       ),
       uiConfig: FlutterBarcodeScannerUiConfig(
@@ -35,7 +34,8 @@ void main() {
     expect(map['allowedFormats'], isEmpty);
     expect((map['strings'] as Map)['title'], 'Barcode Scanner');
     expect((map['scanWindow'] as Map)['enabled'], isFalse);
-    expect((map['scanWindow'] as Map)['widthFactor'], 0.7);
+    expect((map['scanWindow'] as Map)['width'], 0.7);
+    expect((map['scanWindow'] as Map)['left'], 0.15);
     expect((map['uiConfig'] as Map)['initialCameraLens'], 'front');
     expect((map['uiConfig'] as Map)['initialTorchEnabled'], isTrue);
   });
@@ -133,19 +133,71 @@ void main() {
     );
   });
 
-  test('scan window normalizes invalid platform values', () {
-    const config = FlutterBarcodeScannerScanWindow(
-      widthFactor: double.infinity,
-      heightFactor: 0.01,
-      cornerRadius: -5,
-    );
+  group('scan window geometry', () {
+    test('a non-finite rect falls back to the default', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0, 0, double.infinity, 0.4),
+      );
 
-    expect(config.effectiveWidthFactor, 0.58);
-    expect(config.effectiveHeightFactor, 0.2);
-    expect(config.effectiveCornerRadius, 0);
-    expect(config.toMap()['widthFactor'], 0.58);
-    expect(config.toMap()['heightFactor'], 0.2);
-    expect(config.toMap()['cornerRadius'], 0);
+      expect(window.effectiveRect, FlutterBarcodeScannerScanWindow.defaultRect);
+    });
+
+    test('a zero-area rect cannot be produced', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0.2, 0.2, 0, 0),
+      );
+
+      expect(window.effectiveRect.width, greaterThan(0));
+      expect(window.effectiveRect.height, greaterThan(0));
+    });
+
+    test('a rect is clamped to stay inside the preview', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0.9, 0.9, 0.5, 0.5),
+      );
+
+      final rect = window.effectiveRect;
+      expect(rect.right, lessThanOrEqualTo(1.0));
+      expect(rect.bottom, lessThanOrEqualTo(1.0));
+    });
+
+    test('a negative corner radius becomes zero', () {
+      const window = FlutterBarcodeScannerScanWindow(cornerRadius: -5);
+
+      expect(window.effectiveCornerRadius, 0);
+      expect(window.toMap()['cornerRadius'], 0);
+    });
+
+    test('resolve maps the rect onto a preview size', () {
+      const window = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0.1, 0.2, 0.8, 0.4),
+      );
+
+      expect(
+        window.resolve(const Size(400, 800)),
+        rectMoreOrLessEquals(const Rect.fromLTWH(40, 160, 320, 320)),
+      );
+    });
+
+    test('resolve returns null when the window is disabled', () {
+      const window = FlutterBarcodeScannerScanWindow(enabled: false);
+
+      expect(window.resolve(const Size(400, 800)), isNull);
+    });
+
+    test('equal factors no longer collapse to a square', () {
+      // B16: the old rule made 0.58/0.58 a square at min(w, h), which is why a
+      // long linear code was hard to frame in the default window.
+      // ignore: deprecated_member_use_from_same_package
+      final window = FlutterBarcodeScannerScanWindow.fromFactors(
+        widthFactor: 0.8,
+        heightFactor: 0.8,
+      );
+
+      final rect = window.resolve(const Size(400, 800))!;
+      expect(rect.width, 320);
+      expect(rect.height, 640);
+    });
   });
 
   test(
@@ -217,8 +269,7 @@ void main() {
         FlutterBarcodeScannerConfig(),
         autoPauseOnScan: false,
         widgetConfig: const FlutterBarcodeScannerWidgetConfig(
-          // ignore: deprecated_member_use_from_same_package
-          freezePreviewWhenPaused: true,
+          showPauseResumeButton: true,
         ),
       );
       await controller.dispose();
@@ -280,10 +331,6 @@ void main() {
   test('widget config exposes expected platform map', () {
     const config = FlutterBarcodeScannerWidgetConfig(
       autoRequestCameraPermission: true,
-      // Deprecated and ignored by both platforms since 0.2.1. It stays on the
-      // wire until 0.3.0 removes the field, so the key is asserted on purpose.
-      // ignore: deprecated_member_use_from_same_package
-      freezePreviewWhenPaused: true,
       showPauseResumeButton: true,
       scanWindowBorderColor: Colors.white,
       pausedScanWindowBorderColor: Colors.red,
@@ -294,7 +341,11 @@ void main() {
     final map = config.toMap();
 
     expect(map['autoRequestCameraPermission'], isTrue);
-    expect(map['freezePreviewWhenPaused'], isTrue);
+    expect(
+      map.containsKey('freezePreviewWhenPaused'),
+      isFalse,
+      reason: 'removed in 0.3.0, must be off the channel too',
+    );
     expect(map['showPauseResumeButton'], isTrue);
     expect(map['pausedScanWindowBorderColor'], Colors.red.toARGB32());
     expect(map['pauseTooltip'], 'Pause');
@@ -380,7 +431,13 @@ void main() {
       }
 
       await emitState(FlutterBarcodeScannerViewState.running);
+
+      // B15: inactive alone must not tear the camera down. On iOS it fires for
+      // notification banners, Control Center and the app switcher.
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      await tester.pump();
+      expect(calls.where((call) => call.method == 'stopCamera'), isEmpty);
+
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
       await tester.pump();
       expect(calls.where((call) => call.method == 'stopCamera'), hasLength(1));
@@ -390,8 +447,7 @@ void main() {
       expect(calls.where((call) => call.method == 'startCamera'), hasLength(1));
 
       await emitState(FlutterBarcodeScannerViewState.detectionPaused);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
-      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
       await tester.pump();
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pump();
@@ -416,7 +472,9 @@ void main() {
       final first = FlutterBarcodeScannerConfig(
         allowedFormats: FlutterBarcodeScannerFormats.common,
         strings: const FlutterBarcodeScannerStrings(title: 'Gate A'),
-        scanWindow: const FlutterBarcodeScannerScanWindow(widthFactor: 0.7),
+        scanWindow: const FlutterBarcodeScannerScanWindow(
+          rect: Rect.fromLTWH(0.15, 0.3, 0.7, 0.4),
+        ),
         uiConfig: const FlutterBarcodeScannerUiConfig(showFlashButton: false),
         statusBarStyle: const FlutterBarcodeScannerStatusBarStyle(
           isTransparent: true,
@@ -429,7 +487,9 @@ void main() {
       final second = FlutterBarcodeScannerConfig(
         allowedFormats: FlutterBarcodeScannerFormats.common,
         strings: const FlutterBarcodeScannerStrings(title: 'Gate A'),
-        scanWindow: const FlutterBarcodeScannerScanWindow(widthFactor: 0.7),
+        scanWindow: const FlutterBarcodeScannerScanWindow(
+          rect: Rect.fromLTWH(0.15, 0.3, 0.7, 0.4),
+        ),
         uiConfig: const FlutterBarcodeScannerUiConfig(showFlashButton: false),
         statusBarStyle: const FlutterBarcodeScannerStatusBarStyle(
           isTransparent: true,
@@ -535,8 +595,14 @@ void main() {
         isNot(equals(const FlutterBarcodeScannerStrings(title: 'B'))),
       );
       expect(
-        const FlutterBarcodeScannerScanWindow(widthFactor: 0.5),
-        equals(const FlutterBarcodeScannerScanWindow(widthFactor: 0.5)),
+        const FlutterBarcodeScannerScanWindow(
+          rect: Rect.fromLTWH(0.25, 0.3, 0.5, 0.4),
+        ),
+        equals(
+          const FlutterBarcodeScannerScanWindow(
+            rect: Rect.fromLTWH(0.25, 0.3, 0.5, 0.4),
+          ),
+        ),
       );
       expect(
         const FlutterBarcodeScannerUiConfig(showFlashButton: false),
@@ -559,12 +625,18 @@ void main() {
     });
 
     test('scan windows compare declared values, not clamped ones', () {
-      // 0.05 and 0.10 both clamp to the 0.2 minimum, but they are different
+      // Both rects clamp to the same usable window, but they are different
       // configurations and must not compare equal.
-      const low = FlutterBarcodeScannerScanWindow(widthFactor: 0.05);
-      const lower = FlutterBarcodeScannerScanWindow(widthFactor: 0.10);
+      const low = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0.9, 0.3, 0.5, 0.4),
+      );
+      const lower = FlutterBarcodeScannerScanWindow(
+        rect: Rect.fromLTWH(0.95, 0.3, 0.5, 0.4),
+      );
 
-      expect(low.effectiveWidthFactor, equals(lower.effectiveWidthFactor));
+      // Tolerance rather than ==: these are computed doubles, so identical
+      // geometry can still differ in the last bit.
+      expect(low.effectiveRect, rectMoreOrLessEquals(lower.effectiveRect));
       expect(low, isNot(equals(lower)));
     });
   });
@@ -1249,6 +1321,279 @@ void main() {
         'requestCameraPermission',
         'openAppSettings',
       ]);
+    });
+  });
+
+  group('permission UI and builders', () {
+    late List<MethodCall> calls;
+    late MethodChannel methods;
+    late String status;
+
+    setUp(() {
+      status = 'permanentlyDenied';
+      calls = <MethodCall>[];
+      methods = const MethodChannel('flutter_barcode_scanner_sdk/methods');
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methods, (call) async {
+            calls.add(call);
+            if (call.method == 'openAppSettings') {
+              return true;
+            }
+            return status;
+          });
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methods, null);
+    });
+
+    Future<void> pump(WidgetTester tester, {Widget? child}) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home:
+              child ??
+              FlutterBarcodeScannerView(config: FlutterBarcodeScannerConfig()),
+        ),
+      );
+      await tester.pump();
+      debugDefaultTargetPlatformOverride = null;
+    }
+
+    testWidgets('permanently denied offers settings, not a retry', (
+      tester,
+    ) async {
+      await pump(tester);
+
+      expect(find.text('Open settings'), findsOneWidget);
+      expect(find.text('Allow camera access'), findsNothing);
+
+      await tester.tap(find.text('Open settings'));
+      await tester.pump();
+      expect(calls.map((call) => call.method), contains('openAppSettings'));
+    });
+
+    testWidgets('denied offers a retry, not settings', (tester) async {
+      status = 'denied';
+      await pump(tester);
+
+      expect(find.text('Allow camera access'), findsOneWidget);
+      expect(find.text('Open settings'), findsNothing);
+
+      calls.clear();
+      await tester.tap(find.text('Allow camera access'));
+      await tester.pump();
+      expect(
+        calls.map((call) => call.method),
+        contains('requestCameraPermission'),
+      );
+    });
+
+    testWidgets('restricted offers neither action', (tester) async {
+      status = 'restricted';
+      await pump(tester);
+
+      expect(find.byType(FilledButton), findsNothing);
+      expect(
+        find.text('Camera access is not allowed on this device.'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('permissionBuilder replaces the default UI', (tester) async {
+      await pump(
+        tester,
+        child: MaterialApp(
+          home: FlutterBarcodeScannerView(
+            config: FlutterBarcodeScannerConfig(),
+            permissionBuilder: (context, status, retry) =>
+                Text('custom ${status.name}'),
+          ),
+        ),
+      );
+
+      expect(find.text('custom permanentlyDenied'), findsOneWidget);
+      expect(find.text('Open settings'), findsNothing);
+    });
+  });
+
+  group('default overlay controls', () {
+    late List<MethodCall> viewCalls;
+    late MethodChannel channel;
+
+    setUp(() {
+      viewCalls = <MethodCall>[];
+      channel = const MethodChannel(
+        'flutter_barcode_scanner_sdk/scanner_view/64',
+      );
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (call) async {
+            viewCalls.add(call);
+            if (call.method == 'toggleFlash') {
+              return true;
+            }
+            return null;
+          });
+    });
+
+    tearDown(() {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, null);
+    });
+
+    Future<FlutterBarcodeScannerController> pumpScanner(
+      WidgetTester tester, {
+      FlutterBarcodeScannerWidgetConfig? widgetConfig,
+      FlutterBarcodeScannerOverlayBuilder? overlayBuilder,
+    }) async {
+      final controller = FlutterBarcodeScannerController()..attach(64);
+      addTearDown(controller.dispose);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: FlutterBarcodeScannerView(
+            controller: controller,
+            config: FlutterBarcodeScannerConfig(),
+            widgetConfig:
+                widgetConfig ??
+                const FlutterBarcodeScannerWidgetConfig(
+                  autoRequestCameraPermission: false,
+                ),
+            overlayBuilder: overlayBuilder,
+          ),
+        ),
+      );
+      await tester.pump();
+      return controller;
+    }
+
+    Future<void> emitState(
+      WidgetTester tester,
+      FlutterBarcodeScannerViewState state,
+    ) async {
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(
+            channel.name,
+            const StandardMethodCodec().encodeMethodCall(
+              MethodCall('onState', state.name),
+            ),
+            (_) {},
+          );
+      await tester.pump();
+    }
+
+    testWidgets('the torch button drives the controller', (tester) async {
+      await pumpScanner(tester);
+      await emitState(tester, FlutterBarcodeScannerViewState.running);
+
+      final torch = find.byIcon(Icons.flash_on);
+      expect(torch, findsOneWidget);
+      await tester.tap(torch);
+      await tester.pump();
+
+      expect(viewCalls.map((call) => call.method), contains('toggleFlash'));
+    });
+
+    testWidgets('the camera-switch button drives the controller', (
+      tester,
+    ) async {
+      await pumpScanner(tester);
+      await emitState(tester, FlutterBarcodeScannerViewState.running);
+
+      await tester.tap(find.byIcon(Icons.flip_camera_android_outlined));
+      await tester.pump();
+
+      expect(viewCalls.map((call) => call.method), contains('switchCamera'));
+    });
+
+    testWidgets('the pause/resume button toggles detection', (tester) async {
+      await pumpScanner(
+        tester,
+        widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+          autoRequestCameraPermission: false,
+          showPauseResumeButton: true,
+        ),
+      );
+      await emitState(tester, FlutterBarcodeScannerViewState.running);
+
+      await tester.tap(find.byIcon(Icons.pause_rounded));
+      await tester.pump();
+      expect(viewCalls.map((call) => call.method), contains('pauseDetection'));
+
+      await emitState(tester, FlutterBarcodeScannerViewState.detectionPaused);
+      await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+      await tester.pump();
+      expect(viewCalls.map((call) => call.method), contains('resumeDetection'));
+    });
+
+    testWidgets('overlayBuilder replaces the default controls', (tester) async {
+      await pumpScanner(
+        tester,
+        overlayBuilder: (context, scanWindow, controller) =>
+            const Text('custom overlay'),
+      );
+      await emitState(tester, FlutterBarcodeScannerViewState.running);
+
+      expect(find.text('custom overlay'), findsOneWidget);
+      expect(find.byIcon(Icons.flash_on), findsNothing);
+    });
+
+    testWidgets('a config change pushes updateConfig to native', (
+      tester,
+    ) async {
+      final controller = FlutterBarcodeScannerController()..attach(64);
+      addTearDown(controller.dispose);
+      Widget build(FlutterBarcodeScannerConfig config) => MaterialApp(
+        home: FlutterBarcodeScannerView(
+          controller: controller,
+          config: config,
+          widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+            autoRequestCameraPermission: false,
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(build(FlutterBarcodeScannerConfig()));
+      await tester.pump();
+      viewCalls.clear();
+
+      await tester.pumpWidget(
+        build(
+          FlutterBarcodeScannerConfig(
+            strings: const FlutterBarcodeScannerStrings(title: 'Changed'),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      expect(viewCalls.map((call) => call.method), contains('updateConfig'));
+    });
+
+    testWidgets('an identical config does not', (tester) async {
+      final controller = FlutterBarcodeScannerController()..attach(64);
+      addTearDown(controller.dispose);
+      Widget build() => MaterialApp(
+        home: FlutterBarcodeScannerView(
+          controller: controller,
+          config: FlutterBarcodeScannerConfig(),
+          widgetConfig: const FlutterBarcodeScannerWidgetConfig(
+            autoRequestCameraPermission: false,
+          ),
+        ),
+      );
+
+      await tester.pumpWidget(build());
+      await tester.pump();
+      viewCalls.clear();
+
+      // B11: value equality means a rebuild with equal values is not a change.
+      await tester.pumpWidget(build());
+      await tester.pump();
+
+      expect(
+        viewCalls.map((call) => call.method),
+        isNot(contains('updateConfig')),
+      );
     });
   });
 }

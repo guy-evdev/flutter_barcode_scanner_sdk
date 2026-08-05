@@ -35,10 +35,13 @@ struct ScannerConfig {
     let showCameraSwitchButton: Bool
     let initialCameraPosition: AVCaptureDevice.Position
     let initialTorchEnabled: Bool
+    let keepScreenOn: Bool
     let textDirection: UIUserInterfaceLayoutDirection?
     let scanWindowEnabled: Bool
-    let scanWindowWidthFactor: CGFloat
-    let scanWindowHeightFactor: CGFloat
+    let scanWindowLeft: CGFloat
+    let scanWindowTop: CGFloat
+    let scanWindowWidth: CGFloat
+    let scanWindowHeight: CGFloat
     let scanWindowCornerRadius: CGFloat
     let statusBarTransparent: Bool
     let statusBarBackgroundColor: UIColor?
@@ -68,6 +71,7 @@ struct ScannerConfig {
         initialCameraPosition =
             (uiMap?["initialCameraLens"] as? String) == "front" ? .front : .back
         initialTorchEnabled = uiMap?["initialTorchEnabled"] as? Bool ?? false
+        keepScreenOn = uiMap?["keepScreenOn"] as? Bool ?? false
         if (arguments["textDirection"] as? String) == "rtl" {
             textDirection = .rightToLeft
         } else if (arguments["textDirection"] as? String) == "ltr" {
@@ -76,17 +80,29 @@ struct ScannerConfig {
             textDirection = nil
         }
         scanWindowEnabled = windowMap?["enabled"] as? Bool ?? true
-        scanWindowWidthFactor = Self.normalizedCGFloat(
-            windowMap?["widthFactor"] as? NSNumber,
-            fallback: 0.58,
-            minimum: 0.2,
-            maximum: 0.95
+        scanWindowLeft = Self.normalizedCGFloat(
+            windowMap?["left"] as? NSNumber,
+            fallback: 0.1,
+            minimum: 0,
+            maximum: 1
         )
-        scanWindowHeightFactor = Self.normalizedCGFloat(
-            windowMap?["heightFactor"] as? NSNumber,
-            fallback: 0.58,
-            minimum: 0.2,
-            maximum: 0.9
+        scanWindowTop = Self.normalizedCGFloat(
+            windowMap?["top"] as? NSNumber,
+            fallback: 0.3,
+            minimum: 0,
+            maximum: 1
+        )
+        scanWindowWidth = Self.normalizedCGFloat(
+            windowMap?["width"] as? NSNumber,
+            fallback: 0.8,
+            minimum: 0.05,
+            maximum: 1
+        )
+        scanWindowHeight = Self.normalizedCGFloat(
+            windowMap?["height"] as? NSNumber,
+            fallback: 0.4,
+            minimum: 0.05,
+            maximum: 1
         )
         scanWindowCornerRadius = Self.normalizedCGFloat(
             windowMap?["cornerRadius"] as? NSNumber,
@@ -104,6 +120,24 @@ struct ScannerConfig {
         overlayColor =
             Self.color(from: arguments["overlayColor"] as? NSNumber)
             ?? UIColor.black.withAlphaComponent(0.6)
+    }
+
+    /// The scan window in view points.
+    ///
+    /// The rect arrives already clamped from Dart, so every layer frames the
+    /// same region instead of each re-deriving it — the old width/height
+    /// factors carried a hidden "equal factors mean square" rule that all three
+    /// layers had to reimplement identically.
+    func scanWindowRect(in bounds: CGRect) -> CGRect {
+        guard scanWindowEnabled, bounds.width > 0, bounds.height > 0 else {
+            return .zero
+        }
+        return CGRect(
+            x: scanWindowLeft * bounds.width,
+            y: scanWindowTop * bounds.height,
+            width: scanWindowWidth * bounds.width,
+            height: scanWindowHeight * bounds.height
+        )
     }
 
     private static func color(from value: NSNumber?) -> UIColor? {
@@ -618,5 +652,35 @@ enum ScannerPermission {
                 completion(opened)
             }
         }
+    }
+}
+
+/// Holds the display-sleep lock while a scanner is running.
+///
+/// Reference counted because the embedded view and the full-screen scanner can
+/// both be alive at once: a plain boolean would let whichever stopped first
+/// release a lock the other still needs.
+enum ScannerIdleTimer {
+    private static var holders = 0
+
+    static func acquire() {
+        holders += 1
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    static func release() {
+        holders = max(0, holders - 1)
+        if holders == 0 {
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+    }
+
+    /// Current hold count. Exposed for tests.
+    static var activeHolders: Int { holders }
+
+    /// Drops every hold. Exposed for tests.
+    static func resetForTesting() {
+        holders = 0
+        UIApplication.shared.isIdleTimerDisabled = false
     }
 }

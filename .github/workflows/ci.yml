@@ -57,11 +57,16 @@ jobs:
       - name: VM tests with coverage
         run: flutter test --coverage
 
-      # Ratchets up, never down (CLAUDE.md §4). Measured 69.52% (422/607) on 2026-08-04,
-      # up from 64.50% (338/524) on 2026-08-02 after the B11/B12/B13 tests landed.
-      - name: Enforce 69% line coverage
+      # Ratchets up, never down (CLAUDE.md §4). Measured 80.20% (648/808) on 2026-08-04,
+      # up from 69.52% (422/607) and 64.50% (338/524) on 2026-08-02.
+      #
+      # The floor sits ~1.2 points under the measurement on purpose. The previous
+      # 0.52-point margin was not enough: a commit that added code faster than tests
+      # dropped the lane below the floor, which is a real signal but an expensive way
+      # to receive it.
+      - name: Enforce 79% line coverage
         run: |
-          awk -F '[:,]' '$1 == "DA" { total++; covered += ($3 > 0) } END { if (total == 0 || covered * 100 / total < 69) exit 1; printf "Line coverage: %.2f%%\n", covered * 100 / total }' coverage/lcov.info
+          awk -F '[:,]' '$1 == "DA" { total++; covered += ($3 > 0) } END { if (total == 0 || covered * 100 / total < 79) exit 1; printf "Line coverage: %.2f%%\n", covered * 100 / total }' coverage/lcov.info
 
       # Cheap, and the only thing that catches a new top-level file leaking into the archive.
       - name: Publish validation

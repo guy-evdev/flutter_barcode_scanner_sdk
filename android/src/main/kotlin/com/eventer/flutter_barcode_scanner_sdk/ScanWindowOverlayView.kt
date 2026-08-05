@@ -13,8 +13,10 @@ class ScanWindowOverlayView(
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
     private var framingRect: Rect = Rect()
-    private var widthFactor: Float = 0.58f
-    private var heightFactor: Float = 0.58f
+    private var windowLeft: Float = 0.1f
+    private var windowTop: Float = 0.3f
+    private var windowWidth: Float = 0.8f
+    private var windowHeight: Float = 0.4f
     private var cornerRadius: Float = 18f
     private var maskColor: Int = android.graphics.Color.parseColor("#99000000")
     private var borderColor: Int = android.graphics.Color.WHITE
@@ -34,12 +36,16 @@ class ScanWindowOverlayView(
     }
 
     fun applyWindowConfig(
-        widthFactor: Float,
-        heightFactor: Float,
+        left: Float,
+        top: Float,
+        width: Float,
+        height: Float,
         cornerRadius: Float,
     ) {
-        this.widthFactor = widthFactor
-        this.heightFactor = heightFactor
+        this.windowLeft = left
+        this.windowTop = top
+        this.windowWidth = width
+        this.windowHeight = height
         this.cornerRadius = cornerRadius
         updateFramingRect()
         invalidate()
@@ -124,22 +130,17 @@ class ScanWindowOverlayView(
         if (width == 0 || height == 0) {
             return
         }
-        val requestedWidth = (width * widthFactor).toInt()
-        val requestedHeight = (height * heightFactor).toInt()
-        val useSquare = kotlin.math.abs(widthFactor - heightFactor) < 0.001f
-        val framingWidth: Int
-        val framingHeight: Int
-        if (useSquare) {
-            val squareSize = minOf(requestedWidth, requestedHeight)
-            framingWidth = squareSize
-            framingHeight = squareSize
-        } else {
-            framingWidth = requestedWidth
-            framingHeight = requestedHeight
-        }
-        val left = (width - framingWidth) / 2
-        val top = (height - framingHeight) / 2
-        framingRect = Rect(left, top, left + framingWidth, top + framingHeight)
+        // The rect arrives already clamped from Dart. The old "equal factors
+        // collapse to a square" rule lived here, in the embedded view and in
+        // the Flutter overlay, and all three had to agree by hand.
+        val left = (width * windowLeft).toInt()
+        val top = (height * windowTop).toInt()
+        framingRect = Rect(
+            left,
+            top,
+            left + (width * windowWidth).toInt(),
+            top + (height * windowHeight).toInt(),
+        )
         invalidate()
     }
 }

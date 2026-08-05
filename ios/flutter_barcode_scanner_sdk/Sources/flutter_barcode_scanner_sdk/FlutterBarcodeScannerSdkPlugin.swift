@@ -194,6 +194,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
     private var hasConfiguredSession = false
     private var isTorchEnabled = false
     private var restartBudget = RestartBudget(maxAttempts: 3)
+    private var holdsIdleTimer = false
     private lazy var requestedMetadataTypes: [AVMetadataObject.ObjectType] = {
         var uniqueTypes: [AVMetadataObject.ObjectType] = []
         for type in config.allowedTypes where !uniqueTypes.contains(type) {
@@ -233,10 +234,17 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
         }
         buildUi()
         addSessionObservers()
+        if config.keepScreenOn {
+            ScannerIdleTimer.acquire()
+            holdsIdleTimer = true
+        }
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        if holdsIdleTimer {
+            ScannerIdleTimer.release()
+        }
     }
 
     private func addSessionObservers() {
@@ -405,29 +413,7 @@ private final class ScannerViewController: UIViewController, AVCaptureMetadataOu
             height: 36
         )
 
-        if config.scanWindowEnabled {
-            let widthBasedSize = view.bounds.width * config.scanWindowWidthFactor
-            let heightBasedSize = view.bounds.height * config.scanWindowHeightFactor
-            let usesSquareWindow = abs(config.scanWindowWidthFactor - config.scanWindowHeightFactor) < 0.001
-            let scanWidth: CGFloat
-            let scanHeight: CGFloat
-            if usesSquareWindow {
-                let squareSize = min(widthBasedSize, heightBasedSize)
-                scanWidth = squareSize
-                scanHeight = squareSize
-            } else {
-                scanWidth = widthBasedSize
-                scanHeight = heightBasedSize
-            }
-            currentScanWindow = CGRect(
-                x: (view.bounds.width - scanWidth) / 2,
-                y: (view.bounds.height - scanHeight) / 2,
-                width: scanWidth,
-                height: scanHeight
-            )
-        } else {
-            currentScanWindow = .zero
-        }
+        currentScanWindow = config.scanWindowRect(in: view.bounds)
         overlayView.frame = view.bounds
         overlayView.overlayColor = config.overlayColor
         overlayView.scanWindow = currentScanWindow
@@ -1464,29 +1450,7 @@ private final class EmbeddedScannerNativeView: UIView, AVCaptureMetadataOutputOb
     }
 
     private func updateScanWindow() {
-        guard config.scanWindowEnabled, bounds.width > 0, bounds.height > 0 else {
-            currentScanWindow = .zero
-            return
-        }
-        let widthBasedSize = bounds.width * config.scanWindowWidthFactor
-        let heightBasedSize = bounds.height * config.scanWindowHeightFactor
-        let usesSquareWindow = abs(config.scanWindowWidthFactor - config.scanWindowHeightFactor) < 0.001
-        let scanWidth: CGFloat
-        let scanHeight: CGFloat
-        if usesSquareWindow {
-            let squareSize = min(widthBasedSize, heightBasedSize)
-            scanWidth = squareSize
-            scanHeight = squareSize
-        } else {
-            scanWidth = widthBasedSize
-            scanHeight = heightBasedSize
-        }
-        currentScanWindow = CGRect(
-            x: (bounds.width - scanWidth) / 2,
-            y: (bounds.height - scanHeight) / 2,
-            width: scanWidth,
-            height: scanHeight
-        )
+        currentScanWindow = config.scanWindowRect(in: bounds)
     }
 
     /// Applies exactly the requested formats the session reports as available.
