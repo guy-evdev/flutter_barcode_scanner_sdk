@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 /// Barcode symbologies that can be detected by the scanner.
@@ -215,6 +216,24 @@ class FlutterBarcodeScannerStatusBarStyle {
     'backgroundColor': backgroundColor?.toARGB32(),
     'iconBrightness': iconBrightness.name,
   };
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    if (other.runtimeType != runtimeType) {
+      return false;
+    }
+    return other is FlutterBarcodeScannerStatusBarStyle &&
+        other.isTransparent == isTransparent &&
+        other.backgroundColor == backgroundColor &&
+        other.iconBrightness == iconBrightness;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(isTransparent, backgroundColor, iconBrightness);
 }
 
 /// Localizable strings shown by the scanner UI.
@@ -284,6 +303,35 @@ class FlutterBarcodeScannerStrings {
     'cameraPermissionRequired': cameraPermissionRequired,
     'cameraUnavailable': cameraUnavailable,
   };
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    if (other.runtimeType != runtimeType) {
+      return false;
+    }
+    return other is FlutterBarcodeScannerStrings &&
+        other.title == title &&
+        other.close == close &&
+        other.flashOn == flashOn &&
+        other.flashOff == flashOff &&
+        other.switchCamera == switchCamera &&
+        other.cameraPermissionRequired == cameraPermissionRequired &&
+        other.cameraUnavailable == cameraUnavailable;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    title,
+    close,
+    flashOn,
+    flashOff,
+    switchCamera,
+    cameraPermissionRequired,
+    cameraUnavailable,
+  );
 }
 
 /// Region-of-interest configuration for barcode detection.
@@ -358,6 +406,30 @@ class FlutterBarcodeScannerScanWindow {
     'cornerRadius': effectiveCornerRadius,
   };
 
+  /// Whether two scan windows carry the same values.
+  ///
+  /// Compares the values as written, not the clamped `effective*` values, so
+  /// two windows whose out-of-range factors happen to clamp to the same result
+  /// are **not** equal.
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    if (other.runtimeType != runtimeType) {
+      return false;
+    }
+    return other is FlutterBarcodeScannerScanWindow &&
+        other.enabled == enabled &&
+        other.widthFactor == widthFactor &&
+        other.heightFactor == heightFactor &&
+        other.cornerRadius == cornerRadius;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(enabled, widthFactor, heightFactor, cornerRadius);
+
   static double _normalizedFactor(
     double value, {
     required double minimum,
@@ -417,6 +489,29 @@ class FlutterBarcodeScannerUiConfig {
     'initialCameraLens': initialCameraLens.name,
     'initialTorchEnabled': initialTorchEnabled,
   };
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    if (other.runtimeType != runtimeType) {
+      return false;
+    }
+    return other is FlutterBarcodeScannerUiConfig &&
+        other.showFlashButton == showFlashButton &&
+        other.showCameraSwitchButton == showCameraSwitchButton &&
+        other.initialCameraLens == initialCameraLens &&
+        other.initialTorchEnabled == initialTorchEnabled;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    showFlashButton,
+    showCameraSwitchButton,
+    initialCameraLens,
+    initialTorchEnabled,
+  );
 }
 
 /// Flutter-side configuration for [FlutterBarcodeScannerView].
@@ -519,13 +614,60 @@ class FlutterBarcodeScannerWidgetConfig {
     'pauseTooltip': pauseTooltip,
     'resumeTooltip': resumeTooltip,
   };
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    if (other.runtimeType != runtimeType) {
+      return false;
+    }
+    return other is FlutterBarcodeScannerWidgetConfig &&
+        other.autoRequestCameraPermission == autoRequestCameraPermission &&
+        // Compared until 0.3.0 removes the field, so two configs differing only
+        // in it are still reported as different rather than silently merged.
+        // ignore: deprecated_member_use_from_same_package
+        other.freezePreviewWhenPaused == freezePreviewWhenPaused &&
+        other.showPauseResumeButton == showPauseResumeButton &&
+        other.scanWindowBorderColor == scanWindowBorderColor &&
+        other.pausedScanWindowBorderColor == pausedScanWindowBorderColor &&
+        other.pauseTooltip == pauseTooltip &&
+        other.resumeTooltip == resumeTooltip;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    autoRequestCameraPermission,
+    // ignore: deprecated_member_use_from_same_package
+    freezePreviewWhenPaused,
+    showPauseResumeButton,
+    scanWindowBorderColor,
+    pausedScanWindowBorderColor,
+    pauseTooltip,
+    resumeTooltip,
+  );
 }
 
 /// Shared configuration for full-screen and embedded scanner modes.
+///
+/// Unlike the other configuration models this class has **no `const`
+/// constructor**. It validates [allowedFormats] in an assert, and Dart forbids
+/// a non-constant expression such as `Set.contains` in the initializer list of
+/// a `const` constructor. The nested models — [FlutterBarcodeScannerStrings],
+/// [FlutterBarcodeScannerScanWindow], [FlutterBarcodeScannerUiConfig] and
+/// [FlutterBarcodeScannerStatusBarStyle] — are all still `const`-constructible.
 @immutable
 class FlutterBarcodeScannerConfig {
   /// Creates scanner configuration.
-  const FlutterBarcodeScannerConfig({
+  ///
+  /// Asserts that [allowedFormats] does not contain
+  /// [FlutterBarcodeScannerFormat.unknown], which is the label reported for a
+  /// symbology the package does not recognise and is never something the
+  /// scanner can be asked to detect. The check runs at construction, so an
+  /// invalid set fails on the line that wrote it rather than from inside
+  /// `build()`.
+  FlutterBarcodeScannerConfig({
     this.allowedFormats = const {},
     this.strings = const FlutterBarcodeScannerStrings(),
     this.scanWindow = const FlutterBarcodeScannerScanWindow(),
@@ -536,7 +678,13 @@ class FlutterBarcodeScannerConfig {
     this.appBarBackgroundColor,
     this.appBarForegroundColor,
     this.overlayColor = const Color(0x99000000),
-  });
+  }) : assert(
+         !allowedFormats.contains(FlutterBarcodeScannerFormat.unknown),
+         'FlutterBarcodeScannerFormat.unknown cannot be requested. It is the '
+         'label reported when a native scanner returns a symbology this '
+         'package does not recognise, not a format the scanner can detect. '
+         'Remove it from allowedFormats.',
+       );
 
   /// Formats the scanner should detect.
   ///
@@ -608,6 +756,12 @@ class FlutterBarcodeScannerConfig {
   }
 
   /// Converts this configuration into the method-channel payload map.
+  ///
+  /// Throws [ArgumentError] if [allowedFormats] contains
+  /// [FlutterBarcodeScannerFormat.unknown]. The constructor already asserts
+  /// this, which is what catches the mistake during development; this throw is
+  /// the release-mode backstop, because asserts are stripped from release
+  /// builds and an unrecognised format must never reach native code.
   Map<String, Object?> toPlatformMap() {
     if (allowedFormats.contains(FlutterBarcodeScannerFormat.unknown)) {
       throw ArgumentError.value(
@@ -631,6 +785,45 @@ class FlutterBarcodeScannerConfig {
       'overlayColor': overlayColor.toARGB32(),
     };
   }
+
+  /// Whether two configurations carry the same values.
+  ///
+  /// [allowedFormats] is compared as an unordered set, so two configurations
+  /// listing the same formats in a different order are equal.
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) {
+      return true;
+    }
+    if (other.runtimeType != runtimeType) {
+      return false;
+    }
+    return other is FlutterBarcodeScannerConfig &&
+        setEquals(other.allowedFormats, allowedFormats) &&
+        other.strings == strings &&
+        other.scanWindow == scanWindow &&
+        other.uiConfig == uiConfig &&
+        other.statusBarStyle == statusBarStyle &&
+        other.textDirection == textDirection &&
+        other.appBarTransparent == appBarTransparent &&
+        other.appBarBackgroundColor == appBarBackgroundColor &&
+        other.appBarForegroundColor == appBarForegroundColor &&
+        other.overlayColor == overlayColor;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    Object.hashAllUnordered(allowedFormats),
+    strings,
+    scanWindow,
+    uiConfig,
+    statusBarStyle,
+    textDirection,
+    appBarTransparent,
+    appBarBackgroundColor,
+    appBarForegroundColor,
+    overlayColor,
+  );
 }
 
 /// Result returned by full-screen scans and emitted by embedded scans.

@@ -5,8 +5,80 @@ not listed are drop-in.
 
 ## Contents
 
+- [0.3.0](#030)
 - [0.2.1](#021)
 - [0.2.0](#020)
+
+## 0.3.0
+
+### `FlutterBarcodeScannerConfig` is no longer `const`-constructible
+
+The configuration now rejects `FlutterBarcodeScannerFormat.unknown` at construction rather than
+part-way through a build, so the mistake surfaces on the line that made it instead of as a red
+screen from inside the package. That check is an assert, and Dart does not permit a runtime
+check like `Set.contains` in the initializer list of a `const` constructor — so the constructor
+gave up `const`.
+
+Only `FlutterBarcodeScannerConfig` is affected. `FlutterBarcodeScannerStrings`,
+`FlutterBarcodeScannerScanWindow`, `FlutterBarcodeScannerUiConfig`,
+`FlutterBarcodeScannerStatusBarStyle` and `FlutterBarcodeScannerWidgetConfig` all keep their
+`const` constructors, so nested defaults are unchanged.
+
+Drop `const` where you construct the config, and from any enclosing `const` expression:
+
+```dart
+// Before
+const config = FlutterBarcodeScannerConfig(
+  allowedFormats: FlutterBarcodeScannerFormats.common,
+);
+
+// After
+final config = FlutterBarcodeScannerConfig(
+  allowedFormats: FlutterBarcodeScannerFormats.common,
+);
+```
+
+```dart
+// Before
+const FlutterBarcodeScannerView(
+  config: FlutterBarcodeScannerConfig(),
+);
+
+// After
+FlutterBarcodeScannerView(
+  config: FlutterBarcodeScannerConfig(),
+);
+```
+
+The compiler catches every occurrence, so there is nothing to find by hand.
+
+### Configuration models now compare by value
+
+`==` and `hashCode` are implemented on every configuration model. If you were comparing
+configurations by identity — or working around the lack of equality by serializing them — that
+code can be simplified, and equality-based checks that used to be always-false now behave as
+written.
+
+### `controller.state` is joined by a synchronous current value
+
+Nothing is removed. The `state` stream still works exactly as before. Two additions make the
+present state readable without waiting for the next change:
+
+```dart
+// Before — a widget built after the scanner started saw nothing until the next state change
+StreamBuilder<FlutterBarcodeScannerViewState>(
+  stream: controller.state,
+  builder: (context, snapshot) => Text(snapshot.data?.name ?? 'unknown'),
+);
+
+// After
+ValueListenableBuilder<FlutterBarcodeScannerViewState>(
+  valueListenable: controller.stateListenable,
+  builder: (context, state, _) => Text(state.name),
+);
+```
+
+`controller.currentState` reads the same value synchronously anywhere.
 
 ## 0.2.1
 

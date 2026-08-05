@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import 'models/flutter_barcode_scanner_models.dart';
@@ -24,11 +25,46 @@ class FlutterBarcodeScannerController {
   final StreamController<PlatformException> _errorController =
       StreamController<PlatformException>.broadcast();
 
+  final ValueNotifier<FlutterBarcodeScannerViewState> _stateNotifier =
+      ValueNotifier<FlutterBarcodeScannerViewState>(
+        FlutterBarcodeScannerViewState.idle,
+      );
+
   /// Stream of decoded scan results emitted by the native embedded scanner.
   Stream<FlutterBarcodeScanResult> get results => _resultsController.stream;
 
   /// Stream of native scanner lifecycle states.
+  ///
+  /// A broadcast stream delivers only states emitted *after* a listener
+  /// subscribes, so a widget built partway through the scanner's lifecycle sees
+  /// nothing until the next change. Prefer [stateListenable] or [currentState],
+  /// which are readable immediately; this stream is retained for callers
+  /// already built around it.
   Stream<FlutterBarcodeScannerViewState> get state => _stateController.stream;
+
+  /// The scanner's current state, readable synchronously at any time.
+  ///
+  /// Starts at [FlutterBarcodeScannerViewState.idle] and tracks every state the
+  /// native scanner reports, whether or not anything is listening. Retains its
+  /// last value after [dispose].
+  FlutterBarcodeScannerViewState get currentState => _stateNotifier.value;
+
+  /// The scanner's current state as a listenable value.
+  ///
+  /// Drive a `ValueListenableBuilder` with this to rebuild on state changes
+  /// without managing a stream subscription:
+  ///
+  /// ```dart
+  /// ValueListenableBuilder<FlutterBarcodeScannerViewState>(
+  ///   valueListenable: controller.stateListenable,
+  ///   builder: (context, state, _) => Text(state.name),
+  /// )
+  /// ```
+  ///
+  /// Notifies only when the state actually changes; a repeated state is not
+  /// re-delivered. The [state] stream, by contrast, delivers every emission.
+  ValueListenable<FlutterBarcodeScannerViewState> get stateListenable =>
+      _stateNotifier;
 
   /// Stream of native scanner errors.
   Stream<PlatformException> get errors => _errorController.stream;
@@ -92,9 +128,12 @@ class FlutterBarcodeScannerController {
     return _invokeVoid('updateConfig', arguments);
   }
 
-  /// Disposes the controller and closes all streams.
+  /// Disposes the controller, closes all streams, and releases
+  /// [stateListenable].
   ///
-  /// A disposed controller cannot be attached again.
+  /// A disposed controller cannot be attached again. [currentState] keeps
+  /// returning the last observed state so a widget tearing down alongside the
+  /// controller can still read it.
   Future<void> dispose() async {
     if (_disposed) {
       return;
@@ -108,6 +147,7 @@ class FlutterBarcodeScannerController {
     _channel?.setMethodCallHandler(null);
     _channel = null;
     _viewId = null;
+    _stateNotifier.dispose();
     await Future.wait([
       _resultsController.close(),
       _stateController.close(),
@@ -175,6 +215,9 @@ class FlutterBarcodeScannerController {
           (value) => value.name == stateName,
           orElse: () => FlutterBarcodeScannerViewState.error,
         );
+        // The notifier is updated first so a listener woken by the stream
+        // already reads the new value from currentState.
+        _stateNotifier.value = state;
         _stateController.add(state);
         return;
       case 'onError':

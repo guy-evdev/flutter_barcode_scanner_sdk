@@ -25,7 +25,7 @@ final controller = FlutterBarcodeScannerController();
 
 FlutterBarcodeScannerView(
   controller: controller,
-  config: const FlutterBarcodeScannerConfig(
+  config: FlutterBarcodeScannerConfig(
     allowedFormats: FlutterBarcodeScannerFormats.common,
   ),
   autoPauseOnScan: true,
@@ -98,7 +98,7 @@ Three builders replace the default Flutter-side chrome. The native preview is un
 
 ```dart
 FlutterBarcodeScannerView(
-  config: const FlutterBarcodeScannerConfig(),
+  config: FlutterBarcodeScannerConfig(),
   overlayBuilder: (context, scanWindow, controller) {
     // scanWindow is in widget coordinates, or null when the window is disabled.
     return Stack(
@@ -160,7 +160,7 @@ An empty `allowedFormats` means every supported format. Narrowing the set is wor
 you know what you are scanning — it reduces false positives on dense sheets.
 
 ```dart
-const FlutterBarcodeScannerConfig(
+FlutterBarcodeScannerConfig(
   allowedFormats: {
     FlutterBarcodeScannerFormat.code128,
     FlutterBarcodeScannerFormat.qrCode,
@@ -191,7 +191,7 @@ consequence is that **requesting one without the other on iOS will skip codes** 
 retail barcodes, request both:
 
 ```dart
-const FlutterBarcodeScannerConfig(
+FlutterBarcodeScannerConfig(
   allowedFormats: {
     FlutterBarcodeScannerFormat.upcA,
     FlutterBarcodeScannerFormat.ean13,

@@ -8,7 +8,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('config exposes expected platform map', () {
-    const config = FlutterBarcodeScannerConfig(
+    final config = FlutterBarcodeScannerConfig(
       strings: FlutterBarcodeScannerStrings(title: 'Ticket Scanner'),
       scanWindow: FlutterBarcodeScannerScanWindow(
         enabled: false,
@@ -99,11 +99,36 @@ void main() {
   });
 
   test('unknown format cannot be requested for detection', () {
-    const config = FlutterBarcodeScannerConfig(
-      allowedFormats: {FlutterBarcodeScannerFormat.unknown},
+    // B13: the guard fires at construction, on the line that wrote the bad
+    // config, rather than from inside build() when toPlatformMap runs.
+    expect(
+      () => FlutterBarcodeScannerConfig(
+        allowedFormats: {FlutterBarcodeScannerFormat.unknown},
+      ),
+      throwsAssertionError,
+    );
+  });
+
+  test('a valid format set constructs without asserting', () {
+    expect(
+      () => FlutterBarcodeScannerConfig(
+        allowedFormats: FlutterBarcodeScannerFormats.all,
+      ),
+      returnsNormally,
+    );
+  });
+
+  test('copyWith cannot smuggle in the unknown format', () {
+    final config = FlutterBarcodeScannerConfig(
+      allowedFormats: FlutterBarcodeScannerFormats.qrOnly,
     );
 
-    expect(config.toPlatformMap, throwsArgumentError);
+    expect(
+      () => config.copyWith(
+        allowedFormats: {FlutterBarcodeScannerFormat.unknown},
+      ),
+      throwsAssertionError,
+    );
   });
 
   test('scan window normalizes invalid platform values', () {
@@ -145,7 +170,7 @@ void main() {
 
       expect(await FlutterBarcodeScanner.requestCameraPermission(), isTrue);
       final result = await FlutterBarcodeScanner.scan(
-        const FlutterBarcodeScannerConfig(
+        FlutterBarcodeScannerConfig(
           allowedFormats: FlutterBarcodeScannerFormats.qrOnly,
         ),
       );
@@ -184,7 +209,7 @@ void main() {
       expect(await controller.toggleFlash(true), isTrue);
       await controller.switchCamera(BarcodeCameraLens.front);
       await controller.updateConfig(
-        const FlutterBarcodeScannerConfig(),
+        FlutterBarcodeScannerConfig(),
         autoPauseOnScan: false,
         widgetConfig: const FlutterBarcodeScannerWidgetConfig(
           // ignore: deprecated_member_use_from_same_package
@@ -206,7 +231,7 @@ void main() {
   );
 
   test('config copyWith replaces and clears nullable values', () {
-    const original = FlutterBarcodeScannerConfig(
+    final original = FlutterBarcodeScannerConfig(
       textDirection: TextDirection.rtl,
       appBarBackgroundColor: Colors.blue,
       appBarForegroundColor: Colors.white,
@@ -285,7 +310,7 @@ void main() {
     debugDefaultTargetPlatformOverride = TargetPlatform.linux;
 
     await tester.pumpWidget(
-      const MaterialApp(
+      MaterialApp(
         home: SizedBox(
           width: 240,
           height: 180,
@@ -329,7 +354,7 @@ void main() {
         MaterialApp(
           home: FlutterBarcodeScannerView(
             controller: controller,
-            config: const FlutterBarcodeScannerConfig(),
+            config: FlutterBarcodeScannerConfig(),
             widgetConfig: const FlutterBarcodeScannerWidgetConfig(
               autoRequestCameraPermission: false,
             ),
@@ -378,4 +403,282 @@ void main() {
       debugDefaultTargetPlatformOverride = null;
     },
   );
+
+  // B11 — value equality on the config models.
+
+  group('config model equality', () {
+    test('identical values compare equal and share a hash code', () {
+      final first = FlutterBarcodeScannerConfig(
+        allowedFormats: FlutterBarcodeScannerFormats.common,
+        strings: const FlutterBarcodeScannerStrings(title: 'Gate A'),
+        scanWindow: const FlutterBarcodeScannerScanWindow(widthFactor: 0.7),
+        uiConfig: const FlutterBarcodeScannerUiConfig(showFlashButton: false),
+        statusBarStyle: const FlutterBarcodeScannerStatusBarStyle(
+          isTransparent: true,
+        ),
+        textDirection: TextDirection.rtl,
+        appBarTransparent: true,
+        appBarBackgroundColor: const Color(0xFF112233),
+        overlayColor: const Color(0x99000000),
+      );
+      final second = FlutterBarcodeScannerConfig(
+        allowedFormats: FlutterBarcodeScannerFormats.common,
+        strings: const FlutterBarcodeScannerStrings(title: 'Gate A'),
+        scanWindow: const FlutterBarcodeScannerScanWindow(widthFactor: 0.7),
+        uiConfig: const FlutterBarcodeScannerUiConfig(showFlashButton: false),
+        statusBarStyle: const FlutterBarcodeScannerStatusBarStyle(
+          isTransparent: true,
+        ),
+        textDirection: TextDirection.rtl,
+        appBarTransparent: true,
+        appBarBackgroundColor: const Color(0xFF112233),
+        overlayColor: const Color(0x99000000),
+      );
+
+      expect(first, equals(second));
+      expect(first.hashCode, equals(second.hashCode));
+    });
+
+    test('a difference in any nested model breaks equality', () {
+      final base = FlutterBarcodeScannerConfig();
+
+      expect(
+        base.copyWith(
+          strings: const FlutterBarcodeScannerStrings(title: 'Changed'),
+        ),
+        isNot(equals(base)),
+      );
+      expect(
+        base.copyWith(
+          scanWindow: const FlutterBarcodeScannerScanWindow(cornerRadius: 4),
+        ),
+        isNot(equals(base)),
+      );
+      expect(
+        base.copyWith(
+          uiConfig: const FlutterBarcodeScannerUiConfig(
+            initialTorchEnabled: true,
+          ),
+        ),
+        isNot(equals(base)),
+      );
+      expect(
+        base.copyWith(
+          statusBarStyle: const FlutterBarcodeScannerStatusBarStyle(
+            iconBrightness: FlutterBarcodeScannerStatusBarIconBrightness.dark,
+          ),
+        ),
+        isNot(equals(base)),
+      );
+      expect(
+        base.copyWith(overlayColor: const Color(0xFF00FF00)),
+        isNot(equals(base)),
+      );
+    });
+
+    test('allowedFormats compares as an unordered set', () {
+      final first = FlutterBarcodeScannerConfig(
+        allowedFormats: const {
+          FlutterBarcodeScannerFormat.qrCode,
+          FlutterBarcodeScannerFormat.code128,
+        },
+      );
+      final second = FlutterBarcodeScannerConfig(
+        allowedFormats: const {
+          FlutterBarcodeScannerFormat.code128,
+          FlutterBarcodeScannerFormat.qrCode,
+        },
+      );
+
+      expect(first, equals(second));
+      expect(first.hashCode, equals(second.hashCode));
+    });
+
+    test('a different format set breaks equality', () {
+      expect(
+        FlutterBarcodeScannerConfig(
+          allowedFormats: FlutterBarcodeScannerFormats.qrOnly,
+        ),
+        isNot(
+          equals(
+            FlutterBarcodeScannerConfig(
+              allowedFormats: FlutterBarcodeScannerFormats.common,
+            ),
+          ),
+        ),
+      );
+    });
+
+    test('clearing a nullable field breaks equality', () {
+      final withColor = FlutterBarcodeScannerConfig(
+        appBarBackgroundColor: const Color(0xFF112233),
+      );
+
+      expect(
+        withColor.copyWith(clearAppBarBackgroundColor: true),
+        isNot(equals(withColor)),
+      );
+    });
+
+    test('nested models compare by value', () {
+      expect(
+        const FlutterBarcodeScannerStrings(title: 'A'),
+        equals(const FlutterBarcodeScannerStrings(title: 'A')),
+      );
+      expect(
+        const FlutterBarcodeScannerStrings(title: 'A'),
+        isNot(equals(const FlutterBarcodeScannerStrings(title: 'B'))),
+      );
+      expect(
+        const FlutterBarcodeScannerScanWindow(widthFactor: 0.5),
+        equals(const FlutterBarcodeScannerScanWindow(widthFactor: 0.5)),
+      );
+      expect(
+        const FlutterBarcodeScannerUiConfig(showFlashButton: false),
+        equals(const FlutterBarcodeScannerUiConfig(showFlashButton: false)),
+      );
+      expect(
+        const FlutterBarcodeScannerStatusBarStyle(isTransparent: true),
+        equals(const FlutterBarcodeScannerStatusBarStyle(isTransparent: true)),
+      );
+      expect(
+        const FlutterBarcodeScannerWidgetConfig(showPauseResumeButton: true),
+        equals(
+          const FlutterBarcodeScannerWidgetConfig(showPauseResumeButton: true),
+        ),
+      );
+      expect(
+        const FlutterBarcodeScannerWidgetConfig(showPauseResumeButton: true),
+        isNot(equals(const FlutterBarcodeScannerWidgetConfig())),
+      );
+    });
+
+    test('scan windows compare declared values, not clamped ones', () {
+      // 0.05 and 0.10 both clamp to the 0.2 minimum, but they are different
+      // configurations and must not compare equal.
+      const low = FlutterBarcodeScannerScanWindow(widthFactor: 0.05);
+      const lower = FlutterBarcodeScannerScanWindow(widthFactor: 0.10);
+
+      expect(low.effectiveWidthFactor, equals(lower.effectiveWidthFactor));
+      expect(low, isNot(equals(lower)));
+    });
+  });
+
+  // B12 — synchronous current state.
+
+  group('controller state', () {
+    test('starts idle and is readable before anything is attached', () {
+      final controller = FlutterBarcodeScannerController();
+
+      expect(controller.currentState, FlutterBarcodeScannerViewState.idle);
+      expect(
+        controller.stateListenable.value,
+        FlutterBarcodeScannerViewState.idle,
+      );
+    });
+
+    test(
+      'currentState tracks native state with no listener attached',
+      () async {
+        final controller = FlutterBarcodeScannerController();
+        controller.attach(41);
+
+        await _emitState(41, FlutterBarcodeScannerViewState.running);
+
+        // The defect B12 fixes: with only a broadcast stream, a value emitted
+        // while nothing was listening was simply lost.
+        expect(controller.currentState, FlutterBarcodeScannerViewState.running);
+
+        await controller.dispose();
+      },
+    );
+
+    test('the listenable notifies on change', () async {
+      final controller = FlutterBarcodeScannerController();
+      controller.attach(42);
+      final observed = <FlutterBarcodeScannerViewState>[];
+      controller.stateListenable.addListener(
+        () => observed.add(controller.currentState),
+      );
+
+      await _emitState(42, FlutterBarcodeScannerViewState.initializing);
+      await _emitState(42, FlutterBarcodeScannerViewState.running);
+
+      expect(observed, [
+        FlutterBarcodeScannerViewState.initializing,
+        FlutterBarcodeScannerViewState.running,
+      ]);
+
+      await controller.dispose();
+    });
+
+    test('a repeated state does not notify again', () async {
+      final controller = FlutterBarcodeScannerController();
+      controller.attach(43);
+      var notifications = 0;
+      controller.stateListenable.addListener(() => notifications += 1);
+
+      await _emitState(43, FlutterBarcodeScannerViewState.running);
+      await _emitState(43, FlutterBarcodeScannerViewState.running);
+
+      expect(notifications, 1);
+
+      await controller.dispose();
+    });
+
+    test('the stream still delivers every emission', () async {
+      final controller = FlutterBarcodeScannerController();
+      controller.attach(44);
+      final streamed = <FlutterBarcodeScannerViewState>[];
+      final subscription = controller.state.listen(streamed.add);
+
+      await _emitState(44, FlutterBarcodeScannerViewState.running);
+      await _emitState(44, FlutterBarcodeScannerViewState.running);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(streamed, [
+        FlutterBarcodeScannerViewState.running,
+        FlutterBarcodeScannerViewState.running,
+      ]);
+
+      await subscription.cancel();
+      await controller.dispose();
+    });
+
+    test('currentState survives dispose', () async {
+      final controller = FlutterBarcodeScannerController();
+      controller.attach(45);
+      await _emitState(45, FlutterBarcodeScannerViewState.running);
+
+      await controller.dispose();
+
+      expect(controller.currentState, FlutterBarcodeScannerViewState.running);
+    });
+
+    test('an unrecognised state name resolves to error', () async {
+      final controller = FlutterBarcodeScannerController();
+      controller.attach(46);
+
+      await _emitRawState(46, 'somethingNative');
+
+      expect(controller.currentState, FlutterBarcodeScannerViewState.error);
+
+      await controller.dispose();
+    });
+  });
+}
+
+/// Delivers an `onState` callback as the native side would.
+Future<void> _emitState(int viewId, FlutterBarcodeScannerViewState state) =>
+    _emitRawState(viewId, state.name);
+
+Future<void> _emitRawState(int viewId, String name) async {
+  await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .handlePlatformMessage(
+        'flutter_barcode_scanner_sdk/scanner_view/$viewId',
+        const StandardMethodCodec().encodeMethodCall(
+          MethodCall('onState', name),
+        ),
+        (_) {},
+      );
 }

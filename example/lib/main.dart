@@ -31,11 +31,11 @@ class ScannerShowcaseApp extends StatelessWidget {
         useMaterial3: true,
       ),
       home: switch (kHarnessAutorun) {
-        'cycles' => const MountCyclePage(
+        'cycles' => MountCyclePage(
           config: FlutterBarcodeScannerConfig(),
           autoStart: true,
         ),
-        'soak' => const StressHarnessPage(
+        'soak' => StressHarnessPage(
           config: FlutterBarcodeScannerConfig(),
           autoStart: true,
         ),
@@ -837,7 +837,7 @@ class _ScannerShowcaseScreenState extends State<ScannerShowcaseScreen> {
       ),
     };
 
-    return const FlutterBarcodeScannerConfig().copyWith(
+    return FlutterBarcodeScannerConfig().copyWith(
       allowedFormats: _allowedFormats,
       strings: strings,
       scanWindow: FlutterBarcodeScannerScanWindow(

@@ -82,7 +82,7 @@ Add a camera usage description to `ios/Runner/Info.plist`:
 
 ```dart
 final result = await FlutterBarcodeScanner.scan(
-  const FlutterBarcodeScannerConfig(
+  FlutterBarcodeScannerConfig(
     allowedFormats: FlutterBarcodeScannerFormats.common,
     strings: FlutterBarcodeScannerStrings(title: 'Scan ticket'),
   ),
@@ -100,7 +100,7 @@ final controller = FlutterBarcodeScannerController();
 
 FlutterBarcodeScannerView(
   controller: controller,
-  config: const FlutterBarcodeScannerConfig(
+  config: FlutterBarcodeScannerConfig(
     allowedFormats: FlutterBarcodeScannerFormats.qrOnly,
     scanWindow: FlutterBarcodeScannerScanWindow(
       enabled: true,
@@ -137,7 +137,7 @@ Controller actions:
 Use `FlutterBarcodeScannerFormats` for common format groups:
 
 ```dart
-const FlutterBarcodeScannerConfig(
+FlutterBarcodeScannerConfig(
   allowedFormats: FlutterBarcodeScannerFormats.twoDimensional,
 );
 ```

@@ -97,7 +97,6 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   late FlutterBarcodeScannerController _controller;
   late bool _ownsController;
   StreamSubscription<FlutterBarcodeScanResult>? _resultSubscription;
-  StreamSubscription<FlutterBarcodeScannerViewState>? _stateSubscription;
   StreamSubscription<PlatformException>? _errorSubscription;
   FlutterBarcodeScannerViewState _state = FlutterBarcodeScannerViewState.idle;
   PlatformException? _lastError;
@@ -131,14 +130,10 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
         ownsController: widget.controller == null,
       );
     }
-    final configChanged = !_deepEquals(
-      oldWidget.config.toPlatformMap(),
-      widget.config.toPlatformMap(),
-    );
-    final widgetConfigChanged = !_deepEquals(
-      oldWidget.widgetConfig.toMap(),
-      widget.widgetConfig.toMap(),
-    );
+    // Config models carry value equality, so this is a direct comparison
+    // rather than serializing both configs to nested maps on every rebuild.
+    final configChanged = oldWidget.config != widget.config;
+    final widgetConfigChanged = oldWidget.widgetConfig != widget.widgetConfig;
     if ((configChanged ||
             widgetConfigChanged ||
             oldWidget.autoPauseOnScan != widget.autoPauseOnScan) &&
@@ -459,18 +454,13 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   }) {
     _controller = controller ?? FlutterBarcodeScannerController();
     _ownsController = ownsController;
+    // Read the controller's present state rather than waiting for the next
+    // change: attaching to a controller that is already running used to leave
+    // the view showing `idle` until something happened to it.
+    _state = _controller.currentState;
+    _controller.stateListenable.addListener(_handleControllerStateChanged);
     _resultSubscription = _controller.results.listen((result) {
       widget.onScan?.call(result);
-    });
-    _stateSubscription = _controller.state.listen((state) {
-      if (mounted) {
-        setState(() {
-          _state = state;
-          if (state != FlutterBarcodeScannerViewState.error) {
-            _lastError = null;
-          }
-        });
-      }
     });
     _errorSubscription = _controller.errors.listen((error) {
       if (mounted) {
@@ -482,12 +472,23 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
     });
   }
 
+  void _handleControllerStateChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _state = _controller.currentState;
+      if (_state != FlutterBarcodeScannerViewState.error) {
+        _lastError = null;
+      }
+    });
+  }
+
   void _releaseController() {
+    _controller.stateListenable.removeListener(_handleControllerStateChanged);
     unawaited(_resultSubscription?.cancel());
-    unawaited(_stateSubscription?.cancel());
     unawaited(_errorSubscription?.cancel());
     _resultSubscription = null;
-    _stateSubscription = null;
     _errorSubscription = null;
     if (_ownsController) {
       unawaited(_controller.dispose());
@@ -568,41 +569,6 @@ class _FlutterBarcodeScannerViewState extends State<FlutterBarcodeScannerView>
   bool get _supportsCameraPlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
-
-  bool _deepEquals(Object? first, Object? second) {
-    if (identical(first, second)) {
-      return true;
-    }
-    if (first is Map && second is Map) {
-      if (first.length != second.length) {
-        return false;
-      }
-      for (final key in first.keys) {
-        if (!second.containsKey(key) || !_deepEquals(first[key], second[key])) {
-          return false;
-        }
-      }
-      return true;
-    }
-    if (first is Iterable && second is Iterable) {
-      final firstIterator = first.iterator;
-      final secondIterator = second.iterator;
-      while (true) {
-        final hasFirst = firstIterator.moveNext();
-        final hasSecond = secondIterator.moveNext();
-        if (hasFirst != hasSecond) {
-          return false;
-        }
-        if (!hasFirst) {
-          return true;
-        }
-        if (!_deepEquals(firstIterator.current, secondIterator.current)) {
-          return false;
-        }
-      }
-    }
-    return first == second;
-  }
 }
 
 class _OverlayIconButton extends StatelessWidget {

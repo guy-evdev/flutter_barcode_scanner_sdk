@@ -36,6 +36,23 @@ This reference summarizes the public Dart API for `flutter_barcode_scanner_sdk`.
 | `appBarForegroundColor` | `Color?` | `null` | Full-screen scanner app bar foreground. |
 | `overlayColor` | `Color` | `Color(0x99000000)` | Mask color outside the scan window. |
 
+Requesting `FlutterBarcodeScannerFormat.unknown` in `allowedFormats` fails an assert at
+construction — it is the label reported for a symbology the package does not recognise, never a
+format the scanner can be asked to detect.
+
+Because that assert needs a runtime check, **this class has no `const` constructor**; the four
+nested configuration models below do, so `const FlutterBarcodeScannerStrings(...)` and friends
+still work as defaults.
+
+### Equality
+
+Every configuration model implements `==` and `hashCode` by value, so two configurations built
+from the same values compare equal and can be used as map keys or compared in `didUpdateWidget`.
+`allowedFormats` compares as an unordered set.
+
+Scan windows compare the values **as written**, not the clamped `effective*` values: two windows
+whose out-of-range factors happen to clamp to the same result are not equal.
+
 ### `FlutterBarcodeScannerStrings`
 
 | Field | Type | Default | Description |
@@ -113,11 +130,25 @@ and negative corner radii become zero. The effective values are available from
 
 | API | Type | Description |
 | --- | --- | --- |
+| `currentState` | `FlutterBarcodeScannerViewState` | The state right now, readable synchronously at any time. Starts at `idle`; keeps its last value after `dispose()`. |
+| `stateListenable` | `ValueListenable<FlutterBarcodeScannerViewState>` | The same value as a listenable, for `ValueListenableBuilder`. Notifies only when the state actually changes. |
 | `results` | `Stream<FlutterBarcodeScanResult>` | Embedded scan results. |
-| `state` | `Stream<FlutterBarcodeScannerViewState>` | Native scanner lifecycle states. |
+| `state` | `Stream<FlutterBarcodeScannerViewState>` | Native scanner lifecycle states. Delivers every emission, including a repeat of the current state. |
 | `errors` | `Stream<PlatformException>` | Native scanner errors. |
 | `isAttached` | `bool` | Whether the controller is attached to a platform view. |
 | `viewId` | `int?` | Current platform view id. |
+
+Reach for `currentState` or `stateListenable` first. `state` is a broadcast stream, so it
+delivers only what is emitted *after* you subscribe — a widget built partway through the
+scanner's life sees nothing on it until the next change, while `currentState` is correct
+immediately. The stream is retained for code already built around it.
+
+```dart
+ValueListenableBuilder<FlutterBarcodeScannerViewState>(
+  valueListenable: controller.stateListenable,
+  builder: (context, state, _) => Text(state.name),
+)
+```
 
 ### Methods
 
