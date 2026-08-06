@@ -218,10 +218,14 @@ class _MountCyclePageState extends State<MountCyclePage> {
   String get _report {
     final buffer = StringBuffer()
       ..writeln('flutter_barcode_scanner_sdk — mount/unmount cycles')
-      ..writeln('platform: ${Platform.operatingSystem} '
-          '${Platform.operatingSystemVersion}')
+      ..writeln(
+        'platform: ${Platform.operatingSystem} '
+        '${Platform.operatingSystemVersion}',
+      )
       ..writeln('pass: $_passNumber${_passNumber > 1 ? " (warm start)" : ""}')
-      ..writeln('dwell: ${_dwell == CycleDwell.untilRunning ? "until running" : "fixed ${_fixedDwell.inMilliseconds}ms"}')
+      ..writeln(
+        'dwell: ${_dwell == CycleDwell.untilRunning ? "until running" : "fixed ${_fixedDwell.inMilliseconds}ms"}',
+      )
       ..writeln('')
       ..writeln('cycles completed: $_cyclesCompleted / $_targetCycles')
       ..writeln('elapsed: ${_elapsed.inSeconds}s')
@@ -232,8 +236,10 @@ class _MountCyclePageState extends State<MountCyclePage> {
       ..writeln('  baseline: ${_formatBytes(_baselineRss)}')
       ..writeln('  final:    ${_formatBytes(_lastRss)}')
       ..writeln('  peak:     ${_formatBytes(_peakRss)}')
-      ..writeln('  drift:    ${_formatBytes(_lastRss - _baselineRss)} total, '
-          '${(_driftPerCycle / 1024).toStringAsFixed(1)} KB/cycle')
+      ..writeln(
+        '  drift:    ${_formatBytes(_lastRss - _baselineRss)} total, '
+        '${(_driftPerCycle / 1024).toStringAsFixed(1)} KB/cycle',
+      )
       ..writeln('');
     if (_errorCounts.isEmpty) {
       buffer.writeln('errors: none');
@@ -336,8 +342,9 @@ class _MountCyclePageState extends State<MountCyclePage> {
                         selected: _dwell == CycleDwell.fixedShort,
                         onSelected: _isRunning
                             ? null
-                            : (_) =>
-                                  setState(() => _dwell = CycleDwell.fixedShort),
+                            : (_) => setState(
+                                () => _dwell = CycleDwell.fixedShort,
+                              ),
                       ),
                     ],
                   ),

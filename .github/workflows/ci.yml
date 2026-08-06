@@ -1,111 +1,103 @@
+# flutter-package template rev 1 — per-push lane.
+# Kept fast enough to actually wait for. Slow and macOS-hosted checks live in release.yml.
+# See CLAUDE.md §4 and §6.
+
 name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, 'release/**']
   pull_request:
-    branches:
-      - main
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  flutter:
-    name: Flutter ${{ matrix.flutter-version }}
+  # Verifies the Flutter floor advertised in pubspec.yaml (>=3.44.0). Nothing else does.
+  # This replaces the old [3.44.0, 3.44.6] matrix, which spent a whole extra job comparing two
+  # adjacent patch releases of the same minor.
+  minimum-sdk:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        flutter-version: [3.44.0, 3.44.6]
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Set up minimum Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.44.0
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
 
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up latest stable Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter --version
+      - run: flutter pub get
+
+      - name: Verify formatting
+        run: dart format --output=none --set-exit-if-changed .
+
+      - run: flutter analyze
+
+      - name: VM tests with coverage
+        run: flutter test --coverage
+
+      # Ratchets up, never down (CLAUDE.md §4). Measured 81.93% (712/869) on 2026-08-05,
+      # up from 80.20% (648/808), 69.52% (422/607) and 64.50% (338/524).
+      #
+      # The floor sits ~1.2 points under the measurement on purpose. The previous
+      # 0.52-point margin was not enough: a commit that added code faster than tests
+      # dropped the lane below the floor, which is a real signal but an expensive way
+      # to receive it.
+      - name: Enforce 81% line coverage
+        run: |
+          awk -F '[:,]' '$1 == "DA" { total++; covered += ($3 > 0) } END { if (total == 0 || covered * 100 / total < 81) exit 1; printf "Line coverage: %.2f%%\n", covered * 100 / total }' coverage/lcov.info
+
+      # Cheap, and the only thing that catches a new top-level file leaking into the archive.
+      - name: Publish validation
+        run: flutter pub publish --dry-run
+
+  # Android is ubuntu-hosted and fast enough to stay on every push. The example app's Gradle
+  # wrapper is created by the debug build above it.
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ matrix.flutter-version }}
           channel: stable
           cache: true
-
-      - name: Show Flutter version
-        run: flutter --version
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Analyze
-        run: flutter analyze
-
-      - name: Test
-        run: flutter test
-
+      - run: flutter pub get
       - name: Build example Android debug APK
         working-directory: example
         run: flutter build apk --debug
-
-      # Flutter creates the example app's Gradle wrapper during the build above.
       - name: Test Android plugin
         working-directory: example/android
         run: ./gradlew :flutter_barcode_scanner_sdk:testDebugUnitTest
 
-  ios:
-    name: iOS SwiftPM
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.44.6
-          channel: stable
-          cache: true
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Build example iOS simulator app
-        working-directory: example
-        run: flutter build ios --simulator --debug
-
-      - name: Run iOS native tests
-        working-directory: example/ios
-        run: >-
-          xcodebuild test
-          -workspace Runner.xcworkspace
-          -scheme Runner
-          -destination 'platform=iOS Simulator,OS=latest,name=iPhone 17 Pro'
-
-  ios-cocoapods:
-    name: iOS CocoaPods compatibility
-    runs-on: macos-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: 3.44.6
-          channel: stable
-          cache: true
-
-      - name: Disable Swift Package Manager for this compatibility build
-        run: flutter config --no-enable-swift-package-manager
-
-      - name: Get dependencies
-        run: flutter pub get
-
-      - name: Build example iOS simulator app with CocoaPods
-        working-directory: example
-        run: flutter build ios --simulator --debug
+  # No Chrome lane: this package has no web support. A `flutter test --platform chrome` job here
+  # would compile nothing the VM lane does not already cover.
+  # macOS lanes (iOS SwiftPM + XCTest, CocoaPods compatibility) are in release.yml — they bill at
+  # roughly 10x ubuntu and assert compatibility claims that change rarely.

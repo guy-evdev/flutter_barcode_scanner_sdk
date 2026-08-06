@@ -8,9 +8,11 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Size
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -79,6 +81,8 @@ class FlutterBarcodeScannerEmbeddedView(
     private val startCameraRetry = Runnable { startCamera() }
 
     private var config = ScannerConfig.fromMap(args?.get("config") as? Map<*, *>)
+    private var confirmationTracker = ScanConfirmationTracker(config.scanConfirmationFrames)
+
     private var autoPauseOnScan = args?.get("autoPauseOnScan") as? Boolean ?: true
     private var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>? = null
     private var cameraProvider: ProcessCameraProvider? = null
@@ -296,6 +300,7 @@ class FlutterBarcodeScannerEmbeddedView(
             // the barcode-to-preview coordinate transform used for ROI checks.
             camera = provider.bindToLifecycle(owner, selector, previewUseCase, analysisUseCase)
             hasEverStartedCamera = true
+            applyKeepScreenOn(enabled = true)
             val boundCamera = camera
             if (boundCamera?.cameraInfo?.hasFlashUnit() != true) {
                 isFlashEnabled = false
@@ -314,7 +319,26 @@ class FlutterBarcodeScannerEmbeddedView(
         }
     }
 
+    /**
+     * Holds or releases the host window's keep-awake flag.
+     *
+     * Scoped to the camera running rather than the view existing: a scanner
+     * that is mounted but stopped has no business keeping the display on.
+     */
+    private fun applyKeepScreenOn(enabled: Boolean) {
+        if (!config.keepScreenOn && enabled) {
+            return
+        }
+        val window = activityProvider()?.window ?: return
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     private fun stopCamera(emitState: Boolean = true) {
+        applyKeepScreenOn(enabled = false)
         mainHandler.removeCallbacks(startCameraRetry)
         isStartDeferred = false
         startAttempts.reset()
@@ -339,6 +363,7 @@ class FlutterBarcodeScannerEmbeddedView(
 
     private fun pauseDetection() {
         isDetectionPaused = true
+        confirmationTracker.reset()
         if (isCameraRunning) {
             emitState("detectionPaused")
         }
@@ -350,6 +375,7 @@ class FlutterBarcodeScannerEmbeddedView(
             return
         }
         isDetectionPaused = false
+        confirmationTracker.reset()
         emitState("running")
     }
 
@@ -436,6 +462,7 @@ class FlutterBarcodeScannerEmbeddedView(
 
         if (!needsRebind) {
             config = nextConfig
+            confirmationTracker = ScanConfirmationTracker(config.scanConfirmationFrames)
             autoPauseOnScan = nextAutoPauseOnScan
             if (!hasEverStartedCamera) {
                 isFlashEnabled = config.initialTorchEnabled
@@ -448,6 +475,7 @@ class FlutterBarcodeScannerEmbeddedView(
         val wasPaused = isDetectionPaused
         stopCamera(emitState = false)
         config = nextConfig
+        confirmationTracker = ScanConfirmationTracker(config.scanConfirmationFrames)
         autoPauseOnScan = nextAutoPauseOnScan
         if (!hasEverStartedCamera) {
             lensFacing = if (config.initialCameraLens == "front") CameraSelector.LENS_FACING_FRONT else CameraSelector.LENS_FACING_BACK
@@ -497,19 +525,56 @@ class FlutterBarcodeScannerEmbeddedView(
                     if (isDisposed || isDetectionPaused) {
                         return@addOnSuccessListener
                     }
-                    val matchedBarcode = barcodes.firstOrNull { barcode ->
-                        barcode.rawValue?.isNotBlank() == true &&
-                            (!config.scanWindowEnabled ||
-                                (coordinateTransform != null && isBarcodeInsideOverlay(barcode, overlayRect, coordinateTransform)))
+                    val candidates = barcodes.filter { it.rawValue?.isNotBlank() == true }
+                    val candidateBounds = candidates.map { barcode ->
+                        barcode.boundingBox?.let { box ->
+                            RectF(box)
+                                .also { rect -> coordinateTransform?.mapRect(rect) }
+                                .takeIf { coordinateTransform != null }
+                                ?.toCandidateBounds()
+                        }
                     }
-                    if (matchedBarcode != null) {
-                        if (autoPauseOnScan) {
-                            isDetectionPaused = true
-                        }
-                        emitResult(matchedBarcode)
-                        if (autoPauseOnScan) {
-                            emitState("detectionPaused")
-                        }
+                    val selectedIndex = ScanCandidateSelector.selectNearest(
+                        candidates = candidateBounds,
+                        window = if (config.scanWindowEnabled) overlayRect.toScanWindowBounds() else null,
+                        frameCenterX = previewView.width / 2f,
+                        frameCenterY = previewView.height / 2f,
+                        requireCenterOnCandidate = config.requiresCenterOnBarcode(),
+                        aimRadius = ScanCandidateSelector.aimRadius(
+                            minOf(overlayRect.width(), overlayRect.height()),
+                        ),
+                    )
+
+                    if (selectedIndex == null) {
+                            return@addOnSuccessListener
+                    }
+                    val selected = candidates[selectedIndex]
+                    val value = selected.rawValue ?: return@addOnSuccessListener
+                    // Held back until the same value has been the best candidate for the
+                    // configured run, so a code swept past on the way to another never wins.
+                    // Several codes sharing the window is exactly when a hasty result is the wrong
+                    // one, so the run has to be longer before anything is reported.
+                    val scanWindowBounds =
+                        if (config.scanWindowEnabled) overlayRect.toScanWindowBounds() else null
+                    val codesInWindow = candidateBounds.count { bounds ->
+                        bounds != null && (scanWindowBounds == null || bounds.overlaps(scanWindowBounds))
+                    }
+                    val fired = confirmationTracker.observe(
+                        value,
+                        SystemClock.elapsedRealtime(),
+                        // Crosshair aiming already makes a neighbour unreportable, so the longer
+                        // run would only add latency.
+                        ambiguous = !config.requiresCenterOnBarcode() && codesInWindow > 1,
+                    )
+                    if (!fired) {
+                        return@addOnSuccessListener
+                    }
+                    if (autoPauseOnScan) {
+                        isDetectionPaused = true
+                    }
+                    emitResult(selected)
+                    if (autoPauseOnScan) {
+                        emitState("detectionPaused")
                     }
                 }
                 .addOnCompleteListener(ContextCompat.getMainExecutor(context)) {
@@ -523,20 +588,6 @@ class FlutterBarcodeScannerEmbeddedView(
                 imageProxy.close()
             }
         }
-    }
-
-    private fun isBarcodeInsideOverlay(
-        barcode: Barcode,
-        overlayRect: RectF,
-        coordinateTransform: CoordinateTransform,
-    ): Boolean {
-        if (overlayRect.isEmpty) {
-            return false
-        }
-        val boundingBox = barcode.boundingBox ?: return false
-        val mappedRect = RectF(boundingBox)
-        coordinateTransform.mapRect(mappedRect)
-        return overlayRect.contains(mappedRect.centerX(), mappedRect.centerY())
     }
 
     private fun barcodeAnalysisResolutionSelector(): ResolutionSelector {
@@ -645,19 +696,8 @@ class FlutterBarcodeScannerEmbeddedView(
         }
     }
 
-    private fun scanWindowRect(): RectF {
-        if (!config.scanWindowEnabled || previewView.width <= 0 || previewView.height <= 0) {
-            return RectF()
-        }
-        val requestedWidth = previewView.width * config.scanWindowWidthFactor
-        val requestedHeight = previewView.height * config.scanWindowHeightFactor
-        val useSquare = kotlin.math.abs(config.scanWindowWidthFactor - config.scanWindowHeightFactor) < 0.001f
-        val width = if (useSquare) minOf(requestedWidth, requestedHeight) else requestedWidth
-        val height = if (useSquare) width else requestedHeight
-        val left = (previewView.width - width) / 2f
-        val top = (previewView.height - height) / 2f
-        return RectF(left, top, left + width, top + height)
-    }
+    private fun scanWindowRect(): RectF =
+        config.scanWindowRect(previewView.width, previewView.height)
 
     private fun emitResult(barcode: Barcode) {
         invokeOnMain(

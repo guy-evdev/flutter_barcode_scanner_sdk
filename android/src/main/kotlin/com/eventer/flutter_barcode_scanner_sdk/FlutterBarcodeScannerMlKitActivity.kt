@@ -6,11 +6,13 @@ import android.graphics.Color
 import android.graphics.RectF
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.TextUtils
 import android.util.Size
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
@@ -58,6 +60,10 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
     private var analysis: ImageAnalysis? = null
     private var preview: Preview? = null
     private var hasReturnedResult = false
+    private val confirmationTracker by lazy {
+        ScanConfirmationTracker(config.scanConfirmationFrames)
+    }
+
     private var isFlashEnabled = false
     private var lensFacing = CameraSelector.LENS_FACING_BACK
     private val isAnalyzerBusy = AtomicBoolean(false)
@@ -90,6 +96,9 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             }
         isFlashEnabled = config.initialTorchEnabled
 
+        if (config.keepScreenOn) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
         requestedOrientation = resolveCurrentOrientation()
         onBackPressedDispatcher.addCallback(this) {
             finishWithPayload(ScannerActivityContract.cancelledResult())
@@ -218,50 +227,64 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
                 if (hasReturnedResult) {
                     return@addOnSuccessListener
                 }
-                val matchedBarcode =
-                    if (!config.scanWindowEnabled) {
-                        barcodes.firstOrNull { barcode ->
-                            barcode.rawValue?.isNotBlank() == true
-                        }
-                    } else {
-                        barcodes.firstOrNull { barcode ->
-                            barcode.rawValue?.isNotBlank() == true &&
-                                barcode.boundingBox != null &&
-                                coordinateTransform != null &&
-                                isBarcodeInsideOverlay(barcode, overlayRect, coordinateTransform)
-                        }
+                val candidates = barcodes.filter { it.rawValue?.isNotBlank() == true }
+                val candidateBounds = candidates.map { barcode ->
+                    barcode.boundingBox?.let { box ->
+                        RectF(box)
+                            .also { rect -> coordinateTransform?.mapRect(rect) }
+                            .takeIf { coordinateTransform != null }
+                            ?.toCandidateBounds()
                     }
-
-                if (matchedBarcode != null) {
-                    finishWithPayload(
-                        hashMapOf(
-                            "type" to "barcode",
-                            "rawValue" to matchedBarcode.rawValue,
-                            "format" to mapMlKitFormat(matchedBarcode.format),
-                            "errorCode" to null,
-                            "errorMessage" to null,
-                        ),
-                    )
                 }
+                val selectedIndex = ScanCandidateSelector.selectNearest(
+                    candidates = candidateBounds,
+                    window = if (config.scanWindowEnabled) overlayRect.toScanWindowBounds() else null,
+                    frameCenterX = previewView.width / 2f,
+                    frameCenterY = previewView.height / 2f,
+                    requireCenterOnCandidate = config.requiresCenterOnBarcode(),
+                    aimRadius = ScanCandidateSelector.aimRadius(
+                        minOf(overlayRect.width(), overlayRect.height()),
+                    ),
+                )
+
+                if (selectedIndex == null) {
+                        return@addOnSuccessListener
+                }
+                val matched = candidates[selectedIndex]
+                val value = matched.rawValue ?: return@addOnSuccessListener
+                // Held back until the same value has been the best candidate for the configured
+                // run, so a code swept past on the way to another never wins.
+                // Several codes sharing the window is exactly when a hasty result is the wrong
+                // one, so the run has to be longer before anything is reported.
+                val scanWindowBounds =
+                    if (config.scanWindowEnabled) overlayRect.toScanWindowBounds() else null
+                val codesInWindow = candidateBounds.count { bounds ->
+                    bounds != null && (scanWindowBounds == null || bounds.overlaps(scanWindowBounds))
+                }
+                val fired = confirmationTracker.observe(
+                    value,
+                    SystemClock.elapsedRealtime(),
+                    // Crosshair aiming already makes a neighbour unreportable, so the longer
+                    // run would only add latency.
+                    ambiguous = !config.requiresCenterOnBarcode() && codesInWindow > 1,
+                )
+                if (!fired) {
+                    return@addOnSuccessListener
+                }
+                finishWithPayload(
+                    hashMapOf(
+                        "type" to "barcode",
+                        "rawValue" to value,
+                        "format" to mapMlKitFormat(matched.format),
+                        "errorCode" to null,
+                        "errorMessage" to null,
+                    ),
+                )
             }
             .addOnCompleteListener {
                 isAnalyzerBusy.set(false)
                 imageProxy.close()
             }
-    }
-
-    private fun isBarcodeInsideOverlay(
-        barcode: Barcode,
-        overlayRect: RectF,
-        coordinateTransform: CoordinateTransform?,
-    ): Boolean {
-        if (coordinateTransform == null || overlayRect.isEmpty) {
-            return false
-        }
-        val boundingBox = barcode.boundingBox ?: return false
-        val mappedRect = RectF(boundingBox)
-        coordinateTransform.mapRect(mappedRect)
-        return overlayRect.contains(mappedRect.centerX(), mappedRect.centerY())
     }
 
     private fun barcodeAnalysisResolutionSelector(): ResolutionSelector {
@@ -313,11 +336,7 @@ class FlutterBarcodeScannerMlKitActivity : ComponentActivity() {
             setBorderStrokeWidth(dp(3))
             setBorderLineLength(dp(26))
             setBorderCornerRadius(config.scanWindowCornerRadius.toInt())
-            applyWindowConfig(
-                widthFactor = config.scanWindowWidthFactor,
-                heightFactor = config.scanWindowHeightFactor,
-                cornerRadius = config.scanWindowCornerRadius,
-            )
+            applyWindowConfig(config)
             addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
                 refreshCachedPreviewData()
             }

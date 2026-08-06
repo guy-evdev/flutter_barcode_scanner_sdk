@@ -10,13 +10,13 @@ The package provides two native scanning modes:
 - `FlutterBarcodeScanner.scan(config)` opens a full-screen scanner and returns one result.
 - `FlutterBarcodeScannerView` embeds the native scanner in a Flutter layout and emits results through a controller-friendly widget API.
 
-Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iOS plugin supports Swift Package Manager and CocoaPods.
+Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation capture with Apple's Vision framework for decoding. The iOS plugin supports Swift Package Manager and CocoaPods.
 
 ## When to use this package
 
 - **Decoding happens on-device.** No network call is made, and no barcode data leaves the phone.
 - **No Google Play services requirement.** Android decoding uses the bundled ML Kit barcode model, so it works on devices without Play services.
-- **Native decode paths on both platforms** — CameraX with ML Kit on Android, AVFoundation metadata output on iOS — rather than a single cross-platform decoder.
+- **Native decode paths on both platforms** — CameraX with ML Kit on Android, Vision on iOS — rather than a single cross-platform decoder. Both report every barcode in a frame, so the scanner picks the one you aimed at rather than the first one the platform happened to return.
 - **Both embedded and full-screen modes** ship from one package and share their configuration.
 - **Built for sustained scanning**, where a shift means thousands of scans: detection pauses without rebinding the camera, and the example app ships a soak harness that reports memory, dropped frames, and decode latency.
 - **Not a fit if** you need web or desktop support, or barcode generation. This package is Android and iOS, scanning only.
@@ -42,7 +42,7 @@ Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iO
 | Platform | Minimum | Native engine |
 | --- | --- | --- |
 | Android | API 24 | CameraX + ML Kit Barcode Scanning |
-| iOS | 15.0 | AVFoundation metadata scanning |
+| iOS | 15.0 | AVFoundation capture, Vision decoding |
 | Flutter | 3.44.0 | AGP 9 / Gradle 9 Android plugin build |
 | Dart | 3.12.0 | Sound null safety |
 
@@ -50,7 +50,7 @@ Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation. The iO
 
 ```yaml
 dependencies:
-  flutter_barcode_scanner_sdk: ^0.2.1
+  flutter_barcode_scanner_sdk: ^0.3.0
 ```
 
 Then run:
@@ -82,9 +82,9 @@ Add a camera usage description to `ios/Runner/Info.plist`:
 
 ```dart
 final result = await FlutterBarcodeScanner.scan(
-  const FlutterBarcodeScannerConfig(
+  FlutterBarcodeScannerConfig(
     allowedFormats: FlutterBarcodeScannerFormats.common,
-    strings: FlutterBarcodeScannerStrings(title: 'Scan ticket'),
+    strings: FlutterBarcodeScannerStrings(title: 'Scan barcode'),
   ),
 );
 
@@ -100,28 +100,38 @@ final controller = FlutterBarcodeScannerController();
 
 FlutterBarcodeScannerView(
   controller: controller,
-  config: const FlutterBarcodeScannerConfig(
+  config: FlutterBarcodeScannerConfig(
     allowedFormats: FlutterBarcodeScannerFormats.qrOnly,
-    scanWindow: FlutterBarcodeScannerScanWindow(
-      enabled: true,
-      widthFactor: 0.58,
-      heightFactor: 0.58,
-    ),
   ),
-  widgetConfig: const FlutterBarcodeScannerWidgetConfig(
-    autoRequestCameraPermission: true,
-    showPauseResumeButton: true,
-  ),
-  autoStart: true,
-  autoPauseOnScan: true,
   onScan: (result) {
     if (result.isBarcode) {
-      // Process the result, then resume when ready for another scan.
-      controller.resumeDetection();
+      debugPrint(result.rawValue);
     }
   },
 );
 ```
+
+### Validate each scan
+
+Scanning one code after another is a loop: detect, check it, move on. Return a decision and
+the scanner runs that loop for you — holding detection while your check runs, showing accepted
+or rejected feedback, then resuming:
+
+```dart
+FlutterBarcodeScannerView(
+  config: FlutterBarcodeScannerConfig(),
+  onScanValidate: (result) async {
+    final check = await api.validate(result.rawValue);
+    return check.isValid
+        ? const ScanDecision.accept(message: 'Accepted')
+        : const ScanDecision.reject(message: 'Rejected');
+  },
+);
+```
+
+A slow or failing check cannot double-scan or wedge the scanner. See
+[RECIPES.md](RECIPES.md#continuous-entry-scanning) for the guarantees, and for driving
+pause/resume yourself instead.
 
 Controller actions:
 
@@ -137,7 +147,7 @@ Controller actions:
 Use `FlutterBarcodeScannerFormats` for common format groups:
 
 ```dart
-const FlutterBarcodeScannerConfig(
+FlutterBarcodeScannerConfig(
   allowedFormats: FlutterBarcodeScannerFormats.twoDimensional,
 );
 ```
@@ -149,12 +159,11 @@ Available presets include `all`, `common`, `oneDimensional`, `twoDimensional`, a
 The bundled [example app](example) demonstrates:
 
 - Full-screen and embedded scanner modes
-- Scan-window and whole-preview detection
-- RTL/LTR strings
-- Flash and camera switching
-- Auto-start, auto-pause, and pause/resume behavior
-- App bar, status bar, overlay, and format preset options
-- A stress harness for sustained-scanning runs, in the app bar
+- The scan → validate → accept/reject loop, with an adjustable decision delay
+- The camera-permission states and the route to Settings
+- Scan-window shape, aim mode, and confirmation observations
+- RTL/LTR strings, flash, camera switching, and the chrome options
+- Four measurement harnesses, including a dense-sheet accuracy run
 
 Run it with:
 
@@ -166,8 +175,8 @@ flutter run
 ## Recipes
 
 See [RECIPES.md](RECIPES.md) for the continuous entry-scanning loop, custom overlays,
-scan-window geometry, error codes, and the platform differences between the Android and iOS
-engines.
+scan-window geometry, picking the right barcode when several are in frame, error codes, and the
+platform differences between the Android and iOS engines.
 
 ## API Reference
 
@@ -191,6 +200,7 @@ See [MIGRATION.md](MIGRATION.md) for the code changes each release needs, newest
 | Permission screen does not appear | Confirm camera permission is in the Android manifest or `NSCameraUsageDescription` is in `Info.plist`. |
 | Embedded scanner stays black | Ensure the widget has non-zero size and the controller has not been disposed. |
 | No barcode is detected | Try `scanWindow.enabled = false`, verify lighting/focus, and restrict `allowedFormats` only when the expected format is known. |
+| The wrong barcode is scanned from a sheet | Set `aimMode: FlutterBarcodeScanAimMode.crosshair`, shrink the window with `widthFraction`, or raise `scanConfirmationFrames`. See [RECIPES.md](RECIPES.md#picking-the-right-barcode). |
 | iOS build integration issue | Use Flutter 3.44 or newer and keep Swift Package Manager enabled; CocoaPods remains supported through the podspec. |
 
 ## License

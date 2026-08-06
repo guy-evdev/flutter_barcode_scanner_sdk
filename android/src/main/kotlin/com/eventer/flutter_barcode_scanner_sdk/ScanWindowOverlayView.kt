@@ -13,8 +13,7 @@ class ScanWindowOverlayView(
     attrs: AttributeSet? = null,
 ) : View(context, attrs) {
     private var framingRect: Rect = Rect()
-    private var widthFactor: Float = 0.58f
-    private var heightFactor: Float = 0.58f
+    private var config: ScannerConfig? = null
     private var cornerRadius: Float = 18f
     private var maskColor: Int = android.graphics.Color.parseColor("#99000000")
     private var borderColor: Int = android.graphics.Color.WHITE
@@ -33,14 +32,15 @@ class ScanWindowOverlayView(
         xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.CLEAR)
     }
 
-    fun applyWindowConfig(
-        widthFactor: Float,
-        heightFactor: Float,
-        cornerRadius: Float,
-    ) {
-        this.widthFactor = widthFactor
-        this.heightFactor = heightFactor
-        this.cornerRadius = cornerRadius
+    /**
+     * Adopts [config] as the source of the framing rect.
+     *
+     * The geometry lives in [ScannerConfig.scanWindowRect] so this view, the embedded view and
+     * the Flutter overlay cannot drift apart — they did when each held its own copy of the rule.
+     */
+    fun applyWindowConfig(config: ScannerConfig) {
+        this.config = config
+        this.cornerRadius = config.scanWindowCornerRadius
         updateFramingRect()
         invalidate()
     }
@@ -65,6 +65,28 @@ class ScanWindowOverlayView(
 
         canvas.drawRoundRect(RectF(framingRect), cornerRadius, cornerRadius, borderPaint)
         drawCorners(canvas)
+        if (config?.requiresCenterOnBarcode() == true) {
+            drawCrosshair(canvas)
+        }
+    }
+
+    /**
+     * Marks the aim point under crosshair aiming.
+     *
+     * Without it the mode changes what gets scanned with nothing on screen to explain why a code
+     * sitting inside the frame was ignored.
+     */
+    private fun drawCrosshair(canvas: Canvas) {
+        val rect = RectF(framingRect)
+        val arm = borderLineLength / 2f
+        val gap = arm / 3f
+        val x = rect.centerX()
+        val y = rect.centerY()
+
+        canvas.drawLine(x - arm, y, x - gap, y, borderPaint)
+        canvas.drawLine(x + gap, y, x + arm, y, borderPaint)
+        canvas.drawLine(x, y - arm, x, y - gap, borderPaint)
+        canvas.drawLine(x, y + gap, x, y + arm, borderPaint)
     }
 
     private fun drawCorners(canvas: Canvas) {
@@ -121,25 +143,17 @@ class ScanWindowOverlayView(
     }
 
     fun updateFramingRect() {
+        val activeConfig = config ?: return
         if (width == 0 || height == 0) {
             return
         }
-        val requestedWidth = (width * widthFactor).toInt()
-        val requestedHeight = (height * heightFactor).toInt()
-        val useSquare = kotlin.math.abs(widthFactor - heightFactor) < 0.001f
-        val framingWidth: Int
-        val framingHeight: Int
-        if (useSquare) {
-            val squareSize = minOf(requestedWidth, requestedHeight)
-            framingWidth = squareSize
-            framingHeight = squareSize
-        } else {
-            framingWidth = requestedWidth
-            framingHeight = requestedHeight
-        }
-        val left = (width - framingWidth) / 2
-        val top = (height - framingHeight) / 2
-        framingRect = Rect(left, top, left + framingWidth, top + framingHeight)
+        val rect = activeConfig.scanWindowRect(width, height)
+        framingRect = Rect(
+            rect.left.toInt(),
+            rect.top.toInt(),
+            rect.right.toInt(),
+            rect.bottom.toInt(),
+        )
         invalidate()
     }
 }

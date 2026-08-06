@@ -27,14 +27,16 @@ internal class FlutterBarcodeScannerSdkPluginTest {
     }
 
     @Test
-    fun requestPermissionWithoutAttachedActivityReturnsFalse() {
+    fun requestPermissionWithoutAttachedActivityReportsDenied() {
         val plugin = FlutterBarcodeScannerSdkPlugin()
         val call = MethodCall("requestCameraPermission", null)
         val result: MethodChannel.Result = Mockito.mock(MethodChannel.Result::class.java)
 
         plugin.onMethodCall(call, result)
 
-        Mockito.verify(result).success(false)
+        // Not "granted", and not an error: no activity means no prompt is
+        // possible, which is a denial from the caller's point of view.
+        Mockito.verify(result).success("denied")
     }
 
     @Test
@@ -55,8 +57,8 @@ internal class FlutterBarcodeScannerSdkPluginTest {
                 "allowedFormats" to listOf("QR_CODE", "INVALID", "CODE_128"),
                 "scanWindow" to mapOf(
                     "enabled" to true,
-                    "widthFactor" to 2.0,
-                    "heightFactor" to 0.1,
+                    "widthFraction" to 2.0,
+                    "aspectRatio" to 1.5,
                     "cornerRadius" to 24,
                 ),
                 "uiConfig" to mapOf(
@@ -69,13 +71,14 @@ internal class FlutterBarcodeScannerSdkPluginTest {
         )
 
         assertEquals(listOf("QR_CODE", "CODE_128"), config.allowedFormats)
-        assertEquals("Scan Ticket", config.strings.title)
+        assertEquals("Scan Barcode", config.strings.title)
         assertFalse(config.showFlashButton)
         assertTrue(config.showCameraSwitchButton)
         assertEquals("front", config.initialCameraLens)
         assertTrue(config.initialTorchEnabled)
-        assertEquals(0.95f, config.scanWindowWidthFactor)
-        assertEquals(0.2f, config.scanWindowHeightFactor)
+        // An over-wide window is clamped to the preview rather than rejected.
+        assertEquals(1f, config.scanWindowWidthFraction)
+        assertEquals(1.5f, config.scanWindowAspectRatio)
         assertEquals(24f, config.scanWindowCornerRadius)
     }
 
@@ -84,8 +87,8 @@ internal class FlutterBarcodeScannerSdkPluginTest {
         val config = ScannerConfig.fromMap(
             mapOf(
                 "scanWindow" to mapOf(
-                    "widthFactor" to Double.NaN,
-                    "heightFactor" to Double.POSITIVE_INFINITY,
+                    "widthFraction" to Double.NaN,
+                    "aspectRatio" to Double.POSITIVE_INFINITY,
                     "cornerRadius" to -4,
                 ),
                 "uiConfig" to mapOf("initialCameraLens" to "external"),
@@ -93,8 +96,9 @@ internal class FlutterBarcodeScannerSdkPluginTest {
             ),
         )
 
-        assertEquals(0.58f, config.scanWindowWidthFactor)
-        assertEquals(0.58f, config.scanWindowHeightFactor)
+        // Non-finite values fall back to the default rather than clamping to a bound.
+        assertEquals(0.8f, config.scanWindowWidthFraction)
+        assertEquals(1.5f, config.scanWindowAspectRatio)
         assertEquals(0f, config.scanWindowCornerRadius)
         assertEquals("back", config.initialCameraLens)
     }

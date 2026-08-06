@@ -161,9 +161,13 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
     if (_isRunning) {
       return;
     }
-    final refreshRate =
-        WidgetsBinding.instance.platformDispatcher.views.first.display
-            .refreshRate;
+    final refreshRate = WidgetsBinding
+        .instance
+        .platformDispatcher
+        .views
+        .first
+        .display
+        .refreshRate;
     setState(() {
       _latenciesMs.clear();
       _rssSamples.clear();
@@ -264,7 +268,9 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
       return 0;
     }
     final tailStart = (_rssSamples.length * 3) ~/ 4;
-    final tail = _rssSamples.sublist(tailStart.clamp(0, _rssSamples.length - 1));
+    final tail = _rssSamples.sublist(
+      tailStart.clamp(0, _rssSamples.length - 1),
+    );
     return _median(tail);
   }
 
@@ -287,24 +293,36 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
   String get _report {
     final buffer = StringBuffer()
       ..writeln('flutter_barcode_scanner_sdk — stress harness')
-      ..writeln('platform: ${Platform.operatingSystem} '
-          '${Platform.operatingSystemVersion}')
-      ..writeln('build mode: ${kDebugMode ? "DEBUG — NOT GATE-VALID" : (kProfileMode ? "profile" : "release")}')
-      ..writeln('target: $_targetScans scans, '
-          'inter-scan delay ${_interScanDelayMs}ms')
+      ..writeln(
+        'platform: ${Platform.operatingSystem} '
+        '${Platform.operatingSystemVersion}',
+      )
+      ..writeln(
+        'build mode: ${kDebugMode ? "DEBUG — NOT GATE-VALID" : (kProfileMode ? "profile" : "release")}',
+      )
+      ..writeln(
+        'target: $_targetScans scans, '
+        'inter-scan delay ${_interScanDelayMs}ms',
+      )
       ..writeln('')
       ..writeln('scans completed: $_scansCompleted / $_targetScans')
-      ..writeln('elapsed: ${_formatDuration(_elapsed)} '
-          '(${_scansPerMinute.toStringAsFixed(1)} scans/min)')
+      ..writeln(
+        'elapsed: ${_formatDuration(_elapsed)} '
+        '(${_scansPerMinute.toStringAsFixed(1)} scans/min)',
+      )
       ..writeln('camera restarts: $_cameraRestarts')
       ..writeln('')
       ..writeln('memory (process RSS)')
       ..writeln('  baseline: ${_formatBytes(_baselineRss)}')
       ..writeln('  peak:     ${_formatBytes(_peakRss)}')
-      ..writeln('  steady:   ${_formatBytes(_steadyRss)} '
-          '(${_formatSignedBytes(_steadyRss - _baselineRss)} vs baseline)')
-      ..writeln('  samples:  ${_rssSamples.length} '
-          '@ ${_memorySampleInterval.inMilliseconds}ms')
+      ..writeln(
+        '  steady:   ${_formatBytes(_steadyRss)} '
+        '(${_formatSignedBytes(_steadyRss - _baselineRss)} vs baseline)',
+      )
+      ..writeln(
+        '  samples:  ${_rssSamples.length} '
+        '@ ${_memorySampleInterval.inMilliseconds}ms',
+      )
       ..writeln('')
       ..writeln('frames')
       ..writeln('  budget:  ${_frameBudgetMs.toStringAsFixed(2)}ms')
@@ -601,8 +619,10 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Memory (process RSS)',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Memory (process RSS)',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 8),
             Wrap(
               spacing: 24,
@@ -610,10 +630,7 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
               children: [
                 _Metric(label: 'Baseline', value: _formatBytes(_baselineRss)),
                 _Metric(label: 'Peak', value: _formatBytes(_peakRss)),
-                _Metric(
-                  label: 'Steady',
-                  value: _formatBytes(_steadyRss),
-                ),
+                _Metric(label: 'Steady', value: _formatBytes(_steadyRss)),
                 _Metric(
                   label: 'Drift',
                   value: _formatSignedBytes(_steadyRss - _baselineRss),
@@ -652,8 +669,10 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Decode latency (resume → result)',
-                style: Theme.of(context).textTheme.titleMedium),
+            Text(
+              'Decode latency (resume → result)',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
             const SizedBox(height: 8),
             if (_latenciesMs.isEmpty)
               const Text('No samples yet.')
@@ -695,8 +714,10 @@ class _StressHarnessPageState extends State<StressHarnessPage> {
             Row(
               children: [
                 Expanded(
-                  child: Text('Report',
-                      style: Theme.of(context).textTheme.titleMedium),
+                  child: Text(
+                    'Report',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
                 ),
                 TextButton.icon(
                   onPressed: _copyReport,
