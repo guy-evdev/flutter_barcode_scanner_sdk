@@ -1,3 +1,40 @@
+## 0.3.0
+
+### August 6, 2026
+
+**Breaking changes:**
+
+* The scan window is sized by `widthFraction` and `aspectRatio` instead of a rect or width/height
+  factors, so it keeps its shape on every preview. The framed region changes on upgrade.
+* `aimMode` defaults to `crosshair`: a barcode is reported only when it covers the centre of the
+  scan window.
+* `requestCameraPermission()` returns a status instead of a bool.
+* `freezePreviewWhenPaused` is removed.
+
+See [MIGRATION.md](MIGRATION.md#030).
+
+**New:**
+
+* `onScanValidate` runs the scan → validate → accept/reject loop, holding detection for the whole
+  check and resuming afterwards.
+* Camera permission reports five states, with `checkCameraPermission()`, `openAppSettings()` and a
+  `permissionBuilder`.
+* `keepScreenOn`, `duplicateScanCooldown`, `scanConfirmationFrames`, and synchronous scanner state
+  through `controller.stateListenable`.
+
+**Fixed:**
+
+* iOS returned a neighbouring barcode when several were in frame. It now decodes with Vision,
+  which reports every barcode in a frame; `AVCaptureMetadataOutput` returns only one.
+* The camera no longer stops on `AppLifecycleState.inactive`.
+
+**Compatibility:**
+
+* `UNSUPPORTED_FORMATS` is now almost unreachable on iOS, and detection there is throttled to 15
+  passes per second.
+
+See [What's new in 0.3.0](doc/whats_new_0_3_0.md) for details and examples.
+
 ## 0.2.1
 
 ### August 2, 2026
