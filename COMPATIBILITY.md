@@ -10,6 +10,7 @@
 | Flutter | 3.44.0 or newer stable 3.44.x |
 | Dart | 3.12.0 or newer compatible 3.x |
 | Android | API 24 or newer; compile/target SDK 36 |
+| Android Gradle Plugin | AGP 8.x with the Kotlin plugin, or AGP 9 with `android.builtInKotlin` set either way |
 | Java | 17 |
 | iOS | 15.0 or newer |
 | Xcode | The current Xcode supported by Flutter 3.44 |
