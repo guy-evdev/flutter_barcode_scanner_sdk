@@ -50,7 +50,7 @@ Android uses CameraX with ML Kit Barcode Scanning. iOS uses AVFoundation capture
 
 ```yaml
 dependencies:
-  flutter_barcode_scanner_sdk: ^0.3.0
+  flutter_barcode_scanner_sdk: ^0.3.1
 ```
 
 Then run:
@@ -201,6 +201,7 @@ See [MIGRATION.md](MIGRATION.md) for the code changes each release needs, newest
 | Embedded scanner stays black | Ensure the widget has non-zero size and the controller has not been disposed. |
 | No barcode is detected | Try `scanWindow.enabled = false`, verify lighting/focus, and restrict `allowedFormats` only when the expected format is known. |
 | The wrong barcode is scanned from a sheet | Set `aimMode: FlutterBarcodeScanAimMode.crosshair`, shrink the window with `widthFraction`, or raise `scanConfirmationFrames`. See [RECIPES.md](RECIPES.md#picking-the-right-barcode). |
+| Android build fails with `Extension of type 'KotlinAndroidProjectExtension' does not exist` | Upgrade to 0.3.1 or newer. Earlier versions break on AGP 9 with `android.builtInKotlin=false`. |
 | iOS build integration issue | Use Flutter 3.44 or newer and keep Swift Package Manager enabled; CocoaPods remains supported through the podspec. |
 
 ## License

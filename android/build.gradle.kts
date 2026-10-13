@@ -1,4 +1,4 @@
-import com.android.build.gradle.LibraryExtension
+import com.android.build.api.dsl.LibraryExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.dsl.KotlinAndroidProjectExtension
 
@@ -14,12 +14,16 @@ allprojects {
 
 apply(plugin = "com.android.library")
 
-// AGP 9.0 removed support for applying the Kotlin Gradle Plugin — Kotlin is built in from
-// that version on. Apps still on AGP 8 supply KGP themselves, so it only needs applying
-// there. This is Flutter's documented built-in-Kotlin guard for plugin authors; the AGP and
-// KGP buildscript classpaths are deliberately absent so the consuming app's versions win.
+// AGP 9.0 removed support for applying the Kotlin Gradle Plugin: from AGP 9 Kotlin is built in,
+// unless the app opts out with android.builtInKotlin=false, in which case the app supplies KGP
+// and the Kotlin extension only exists once the plugin is applied. Apply it whenever Kotlin is
+// not built in. This is Flutter's documented guard for plugin authors; the AGP and KGP
+// buildscript classpaths are deliberately absent so the consuming app's versions win.
 val agpMajor = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.substringBefore('.').toInt()
-if (agpMajor < 9) {
+val builtInKotlinEnabled =
+    agpMajor >= 9 &&
+        (providers.gradleProperty("android.builtInKotlin").orNull?.toBoolean() ?: true)
+if (!builtInKotlinEnabled) {
     apply(plugin = "org.jetbrains.kotlin.android")
 }
 

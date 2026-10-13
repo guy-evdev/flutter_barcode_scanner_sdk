@@ -1,3 +1,13 @@
+## 0.3.1
+
+### October 13, 2026
+
+**Fixed:**
+
+* Android build no longer fails with `android.builtInKotlin=false` on AGP 9.
+
+See [What's new in 0.3.1](doc/whats_new_0_3_1.md) for details.
+
 ## 0.3.0
 
 ### August 6, 2026
